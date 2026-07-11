@@ -1,5 +1,5 @@
 {
-  "listen_addr": "127.0.0.1:8082",
+  "listen_addr": "0.0.0.0:8082",
   "upstream": "https://opencode.ai/zen/go",
   "poll_interval": "60s",
   "scrape_cache_ttl": "90s",

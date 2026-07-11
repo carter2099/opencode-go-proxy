@@ -105,6 +105,10 @@ go test ./...                                      # unit tests (no network)
 1. **Base URL** → `http://localhost:8082/v1` (apps that want the full base) or
    `http://localhost:8082` (apps that append `/v1` themselves). Either works; the proxy is
    path-transparent so long as the final URL is `…/v1/chat/completions` or `…/v1/messages`.
+   **For a Docker container** (e.g. Open WebUI), do NOT use `localhost` — that's the
+   container's own loopback. Use `http://host.docker.internal:8082/v1` (with `extra_hosts:
+   - host.docker.internal:host-gateway` in compose), and the host must allow the container's
+   docker-bridge interface in ufw (see "Docker container clients" below).
 2. **API key** → any non-empty placeholder (e.g. `proxy`). The proxy overwrites it with the
    chosen account's real key. The app just needs *something* so its HTTP client sends an
    auth header.
@@ -134,9 +138,29 @@ go test -v ./...
 - Auth: OpenAI-compat path accepts `Authorization: Bearer` or `x-api-key`; anthropic path
   requires `x-api-key`. Proxy swaps whichever the request uses.
 
+## Docker container clients (e.g. Open WebUI)
+
+The proxy binds `0.0.0.0:8082` (not loopback) so Docker containers can reach it, but
+**ufw gates it to the docker bridges only** — the LAN still can't reach it (default deny),
+matching the posture of the sibling `llm-proxy` on `:8081`. Two requirements for a container
+client:
+
+1. `host.docker.internal:host-gateway` in the container's compose `extra_hosts` (so the
+   hostname resolves to the host).
+2. A ufw allow rule for the container's actual docker-bridge interface, e.g.
+   `sudo ufw allow in on br-<id> to any port 8082 proto tcp`. The bridge interface is
+   `br-<first 12 of the docker network id>`; find it with `docker network inspect <name>`.
+   **Do not** assume the packet arrives on `docker0` or from `172.23.0.0/16` — those are
+   stale defaults; a container's traffic arrives on whatever bridge its network uses
+   (`172.22`/`172.18`/…) and ufw's `on docker0` rules won't match. The k3s `cni0`/`flannel.1`
+   rules elsewhere in this homelab are the same pattern.
+
+Open WebUI Admin Settings → Connections → OpenAI API: Base URL
+`http://host.docker.internal:8082/v1`, API key `proxy` (placeholder). The model dropdown
+stays identical (same 20 models from the same upstream).
+
 ## Out of v1 (deferred)
 
 - Auto-retry of failed non-stream requests on the other key.
-- Routing open-webui through this proxy.
 - Failover to local llm-proxy (free qwen) when both Go subs fully exhausted.
 - Self-healing expired cookies (manual refresh; email alert only).
