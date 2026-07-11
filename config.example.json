@@ -1,0 +1,27 @@
+{
+  "listen_addr": "127.0.0.1:8082",
+  "upstream": "https://opencode.ai/zen/go",
+  "poll_interval": "60s",
+  "scrape_cache_ttl": "90s",
+  "hysteresis_points": 8,
+  "tier_safe_pct": 95,
+  "alert_email": "carter2099@pm.me",
+  "smtp_config_path": "/home/carter/scripts/.smtp_config",
+  "stale_realert_hours": 24,
+  "avoid_401_cooldown": "2m",
+  "request_timeout": "10m",
+  "accounts": [
+    {
+      "name": "carter2099",
+      "api_key": "<old key, sk-…>",
+      "workspace_id": "wrk_01KTT8DNPGA9EPJ6MAYKDGJGFC",
+      "auth_cookie": "<Fe26.2**…>"
+    },
+    {
+      "name": "carterbrwn2",
+      "api_key": "<new key, sk-…>",
+      "workspace_id": "wrk_01KWZ0Y6S6HFEQTV3B19BJWDMT",
+      "auth_cookie": "<Fe26.2**…>"
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+<!DOCTYPE html><html><head><title>Settings</title></head><body>
+<nav><a href="/workspace/wrk_TEST/settings">Settings</a></nav>
+<!--
+  A hypothetical future component rendered on /billing that ALSO exposes a
+  `balance:` and `monthlyLimit:` field — but is NOT the billing object.
+  Before the regex tightening, parseBilling would have silently matched these
+  and returned wrong values. After tightening (anchor on customerID:"cus_"),
+  parseBilling must reject the page with "no billing data on page".
+-->
+<script>
+  window.__NOTIFICATIONS = { balance: 5, monthlyLimit: 100, monthlyUsage: 2 };
+</script>
+</body></html>
