@@ -164,7 +164,12 @@ func extractCostFromBody(body []byte) (string, bool) {
 	return parseCostRaw(raw)
 }
 
-// extractCostFromSSELine parses a `data: {...}` SSE line for a cost field.
+// extractCostFromSSELine parses a `data: {...}` SSE line for the billing-truth
+// cost field. It deliberately skips the `inference-cost` telemetry event, which
+// carries a *normalised/hypothetical* cost (non-zero even on a go_free account)
+// and is NOT the actual charge. The billing summary event has `cost` but no
+// `x-opencode-type:"inference-cost"` tag. Relying on event order would be
+// fragile, so we disambiguate by the tag instead.
 func extractCostFromSSELine(line []byte) (string, bool) {
 	s := strings.TrimSpace(string(line))
 	if !strings.HasPrefix(s, "data:") {
@@ -174,7 +179,23 @@ func extractCostFromSSELine(line []byte) (string, bool) {
 	if payload == "[DONE]" || payload == "" {
 		return "", false
 	}
-	return extractCostFromBody([]byte(payload))
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(payload), &m); err != nil {
+		return "", false
+	}
+	// Skip the normalised-cost telemetry event — its `cost` is hypothetical, not
+	// the actual charge. Only the untagged summary event carries billing truth.
+	if t, ok := m["x-opencode-type"]; ok {
+		var tag string
+		if json.Unmarshal(t, &tag) == nil && tag == "inference-cost" {
+			return "", false
+		}
+	}
+	raw, ok := m["cost"]
+	if !ok {
+		return "", false
+	}
+	return parseCostRaw(raw)
 }
 
 // parseCostRaw normalises a json.RawMessage cost into a plain string.

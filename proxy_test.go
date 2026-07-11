@@ -74,6 +74,38 @@ func TestExtractCostFromSSELine(t *testing.T) {
 	}
 }
 
+func TestExtractCostFromSSE_SkipsInferenceCostTelemetry(t *testing.T) {
+	// Live observation (2026-07-11): OpenCode emits TWO cost-bearing events per
+	// stream. The `inference-cost` telemetry event carries a normalised/
+	// hypothetical cost (non-zero even on go_free) — it is NOT the actual
+	// charge. The billing-truth event has `cost` but no `x-opencode-type` tag.
+	// We must skip the telemetry; relying on event order would wrongly demote a
+	// go_free account when the telemetry happens to land last.
+	telemetry := []byte(`data: {"choices":[],"x-opencode-type":"inference-cost","cost":"0.00003450","normalizedUsage":{"inputTokens":7}}`)
+	if cost, ok := extractCostFromSSELine(telemetry); ok {
+		t.Fatalf("inference-cost telemetry must be skipped; got cost=%q", cost)
+	}
+	// The untagged summary event is billing truth — even with a non-zero cost
+	// (PAYG case) it must be captured.
+	payg := []byte(`data: {"choices":[],"cost":"0.00003140"}`)
+	cost, ok := extractCostFromSSELine(payg)
+	if !ok {
+		t.Fatal("untagged summary event should report its cost")
+	}
+	if !costIsPayg(cost) {
+		t.Errorf("summary cost %s should be payg", cost)
+	}
+	// go_free summary (cost 0) must still be captured and NOT demote.
+	gofree := []byte(`data: {"choices":[],"cost":"0"}`)
+	cost, ok = extractCostFromSSELine(gofree)
+	if !ok {
+		t.Fatal("go_free summary event should report its cost")
+	}
+	if costIsPayg(cost) {
+		t.Error("cost 0 must not be payg")
+	}
+}
+
 // ─── applyCost: the reactive demote override ────────────────────────────────
 
 func newTestAccount(name string, t tier) *account {

@@ -13,14 +13,14 @@
   "accounts": [
     {
       "name": "carter2099",
-      "api_key": "<old key, sk-…>",
-      "workspace_id": "wrk_01KTT8DNPGA9EPJ6MAYKDGJGFC",
+      "api_key": "sk-…",
+      "workspace_id": "wrk_…",
       "auth_cookie": "<Fe26.2**…>"
     },
     {
       "name": "carterbrwn2",
-      "api_key": "<new key, sk-…>",
-      "workspace_id": "wrk_01KWZ0Y6S6HFEQTV3B19BJWDMT",
+      "api_key": "sk-…",
+      "workspace_id": "wrk_…",
       "auth_cookie": "<Fe26.2**…>"
     }
   ]
