@@ -71,18 +71,24 @@ curl http://localhost:8082/health
 ```json
 {
   "status": "ok",
-  "active_key": "carterbrwn2",
+  "active_key": "carter2099",
   "accounts": [
-    { "name": "carter2099", "tier": "payg",
-      "rolling":  {"pct": 12, "reset_in": "4h", "status": "ok", "present": true},
-      "weekly":   {"pct": 30, "reset_in": "5d", "status": "ok", "present": true},
-      "monthly":  {"pct": 100,"reset_in": "12d","status": "rate-limited", "present": true},
-      "payg": {"balance_usd": 18.50, "monthly_usage_usd": 6.50, "monthly_limit_usd": 25, "present": true},
-      "last_cost": "0.00002260", "last_error": null, "cookie_fresh": true, ... },
-    { "name": "carterbrwn2", "tier": "go_free", ... }
+    { "name": "carter2099", "tier": "go_free",
+      "rolling":  {"pct": 0,  "reset_in": "5h", "status": "ok", "present": true},
+      "weekly":   {"pct": 0,  "reset_in": "2d", "status": "ok", "present": true},
+      "monthly":  {"pct": 0,  "reset_in": "31d","status": "ok", "present": true},
+      "payg": {"balance_usd": 8.44, "monthly_usage_usd": 11.56, "monthly_limit_usd": 25, "present": true},
+      "last_cost": "0", "last_error": null, "cookie_fresh": true, ... },
+    { "name": "carterbrwn2", "tier": "payg",
+      "rolling":  {"pct": 100,"reset_in": "36m","status": "rate-limited", "present": true},
+      "weekly":   {"pct": 53, "reset_in": "2d", "status": "ok", "present": true},
+      "monthly":  {"pct": 26, "reset_in": "28d","status": "ok", "present": true},
+      "payg": {"balance_usd": 19.14, "monthly_usage_usd": 0.86, "monthly_limit_usd": 25, "present": true},
+      "last_cost": "0.00003450", "last_error": null, "cookie_fresh": true, ... }
   ]
 }
 ```
+`tier` is **runtime state**, not an account property — it flips as each account's rolling/weekly/monthly quota rolls over (the two accounts above have swapped these roles since the proxy was first built). `name` is the only stable account identifier.
 
 ## Build / deploy / manage
 
