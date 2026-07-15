@@ -87,6 +87,19 @@ logged-in dashboard session (scrape auth — *not* the API key). **Cookie-stale 
 is optional — leave both `alert_email` and `smtp_config_path` empty to disable.** When
 enabled, SMTP credentials come from the shared `.smtp_config` file.
 
+### Getting your auth cookie
+
+1. Log in to [opencode.ai](https://opencode.ai) in your browser.
+2. Open DevTools (`F12` or `Ctrl+Shift+I` / `Cmd+Option+I`).
+3. Go to **Application** (Chrome/Edge) or **Storage** (Firefox) → **Cookies** → `https://opencode.ai`.
+4. Find the cookie named **`auth`** and copy its **Value** (a long token starting with `Fe26.2**…`).
+5. Paste that value into your `config.json` as the `auth_cookie` field for each account.
+
+The cookie expires periodically (typically days to weeks). When it does, scrapes will
+fail with a redirect-to-login error; the proxy logs it, the `/health` endpoint shows
+`"cookie_fresh": false`, and — if configured — you'll get an email alert. Repeat the
+steps above to refresh it, update `config.json`, and restart the proxy.
+
 ## Health
 
 ```
