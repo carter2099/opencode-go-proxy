@@ -1,5 +1,5 @@
 [Unit]
-Description=OpenCode Go Proxy (two-subscription aware reverse proxy)
+Description=OpenCode Go Proxy (multi-subscription reverse proxy)
 After=network-online.target
 Wants=network-online.target
 

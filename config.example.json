@@ -5,20 +5,26 @@
   "scrape_cache_ttl": "90s",
   "hysteresis_points": 8,
   "tier_safe_pct": 95,
-  "alert_email": "carter2099@pm.me",
-  "smtp_config_path": "/home/carter/scripts/.smtp_config",
+  "alert_email": "you@example.com",
+  "smtp_config_path": "/path/to/.smtp_config",
   "stale_realert_hours": 24,
   "avoid_401_cooldown": "2m",
   "request_timeout": "10m",
   "accounts": [
     {
-      "name": "carter2099",
+      "name": "primary",
       "api_key": "sk-…",
       "workspace_id": "wrk_…",
       "auth_cookie": "<Fe26.2**…>"
     },
     {
-      "name": "carterbrwn2",
+      "name": "secondary",
+      "api_key": "sk-…",
+      "workspace_id": "wrk_…",
+      "auth_cookie": "<Fe26.2**…>"
+    },
+    {
+      "name": "tertiary",
       "api_key": "sk-…",
       "workspace_id": "wrk_…",
       "auth_cookie": "<Fe26.2**…>"

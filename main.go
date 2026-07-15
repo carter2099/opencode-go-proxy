@@ -68,7 +68,7 @@ func (pc *proxyCore) scrapeAll(now time.Time, realert time.Duration) {
 			p, _ = fetchBillingData(pc.scrapeClient, acct.cfg.WorkspaceID, acct.cfg.AuthCookie)
 		}
 		acct.applyScrape(d, p, now)
-		if acct.staleAlertInfo(now, realert) {
+		if alertingEnabled(pc.cfg) && acct.staleAlertInfo(now, realert) {
 			go func(a *account) {
 				lastGood := a.lastScrapeAt
 				if err := sendAlertEmail(pc.cfg, a, lastGood); err != nil {
@@ -123,3 +123,4 @@ func statusString(snaps []snapshot) string {
 		return "initializing"
 	}
 }
+func alertingEnabled(c Config) bool { return c.AlertEmail != "" && c.SMTPConfigPath != "" }

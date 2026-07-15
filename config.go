@@ -57,8 +57,8 @@ func defaultConfig() Config {
 		ScrapeCacheTTL:    duration(90 * time.Second),
 		HysteresisPoints:  8,
 		TierSafePct:       95,
-		AlertEmail:        "carter2099@pm.me",
-		SMTPConfigPath:    "/home/carter/scripts/.smtp_config",
+		AlertEmail:        "",
+		SMTPConfigPath:    "",
 		StaleRealertHours: 24,
 		Avoid401Cooldown:  duration(2 * time.Minute),
 		RequestTimeout:    duration(10 * time.Minute),
@@ -98,12 +98,6 @@ func loadConfig(path string) (Config, error) {
 	}
 	if cfg.TierSafePct == 0 {
 		cfg.TierSafePct = 95
-	}
-	if cfg.AlertEmail == "" {
-		cfg.AlertEmail = "carter2099@pm.me"
-	}
-	if cfg.SMTPConfigPath == "" {
-		cfg.SMTPConfigPath = "/home/carter/scripts/.smtp_config"
 	}
 	if cfg.StaleRealertHours == 0 {
 		cfg.StaleRealertHours = 24

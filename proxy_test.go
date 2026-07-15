@@ -442,3 +442,62 @@ func TestHandleProxy_BothAvoidedReturns503(t *testing.T) {
 		t.Fatalf("status = %d, want 503", rec.Code)
 	}
 }
+
+// ─── N-account round-robin: cursor cycles all accounts with no repeats ─────
+
+func TestPicker_RoundRobinN(t *testing.T) {
+	cfg := Config{
+		HysteresisPoints:  8,
+		TierSafePct:       95,
+		Avoid401Cooldown:  duration(2 * time.Minute),
+		Accounts: []AccountCfg{
+			{Name: "a", APIKey: "sk-a", WorkspaceID: "wrk-a", AuthCookie: "Fe26.2**a"},
+			{Name: "b", APIKey: "sk-b", WorkspaceID: "wrk-b", AuthCookie: "Fe26.2**b"},
+			{Name: "c", APIKey: "sk-c", WorkspaceID: "wrk-c", AuthCookie: "Fe26.2**c"},
+		},
+	}
+	p := newPicker(cfg)
+	a, b, c := p.accounts[0], p.accounts[1], p.accounts[2]
+	// Force all three to PAYG.
+	a.mu.Lock()
+	a.tier = tierPayg
+	a.mu.Unlock()
+	b.mu.Lock()
+	b.tier = tierPayg
+	b.mu.Unlock()
+	c.mu.Lock()
+	c.tier = tierPayg
+	c.mu.Unlock()
+
+	// Three calls must visit all three distinct accounts.
+	c1, _ := p.choose(time.Now())
+	c2, _ := p.choose(time.Now())
+	c3, _ := p.choose(time.Now())
+	seen := map[int]bool{c1.rrIndex: true, c2.rrIndex: true, c3.rrIndex: true}
+	if len(seen) != 3 {
+		t.Errorf("3-account round-robin visited %d distinct accounts, want 3: %s %s %s",
+			len(seen), c1.cfg.Name, c2.cfg.Name, c3.cfg.Name)
+	}
+	// Fourth call cycles back to first account.
+	c4, _ := p.choose(time.Now())
+	if c4.cfg.Name != c1.cfg.Name {
+		t.Errorf("fourth call = %s, want %s (period 3)", c4.cfg.Name, c1.cfg.Name)
+	}
+}
+
+// ─── alertingEnabled: opt-in gate for cookie-stale emails ───────────────────
+
+func TestAlertingEnabled(t *testing.T) {
+	if alertingEnabled(Config{}) {
+		t.Error("empty config must not enable alerting")
+	}
+	if alertingEnabled(Config{AlertEmail: "x@y.com", SMTPConfigPath: ""}) {
+		t.Error("SMTPConfigPath empty must not enable alerting")
+	}
+	if alertingEnabled(Config{AlertEmail: "", SMTPConfigPath: "/p"}) {
+		t.Error("AlertEmail empty must not enable alerting")
+	}
+	if !alertingEnabled(Config{AlertEmail: "x@y.com", SMTPConfigPath: "/p"}) {
+		t.Error("both set must enable alerting")
+	}
+}

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build and deploy opencode-go-proxy to the homelab.
+# Build and deploy opencode-go-proxy as a user systemd service.
 set -euo pipefail
 
 cd "$(dirname "$0")"

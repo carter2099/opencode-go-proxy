@@ -1,14 +1,24 @@
 # opencode-go-proxy
 
-A local reverse proxy that owns **two** OpenCode Go subscriptions and intelligently
+A local reverse proxy that owns **one or more** OpenCode Go subscriptions and intelligently
 routes each request to the account with the most headroom. Preserves free Go usage as
-long as possible, balances Zen pay-as-you-go ($25 cap each) across both accounts when Go
+long as possible, balances Zen pay-as-you-go ($25 cap each) across all configured accounts when Go
 is exhausted, and degrades safely when cookies/cost signals are unavailable.
 
 Clients (pi, future agents) point at `http://localhost:8082/v1` and use any non-empty
 placeholder API key — the proxy injects the real key for the chosen account. The proxy is
 **path-transparent**: it forwards `/v1/chat/completions` (OpenAI-compat) and `/v1/messages`
 (anthropic) to `https://opencode.ai/zen/go` unchanged except for the auth header.
+
+## Quick start
+
+```bash
+go build -o opencode-go-proxy .
+cp config.example.json config.json
+# edit config.json with your account(s)
+./opencode-go-proxy -config config.json
+# point client at http://localhost:8082/v1
+```
 
 ## The two detection signals (layered)
 
@@ -19,7 +29,8 @@ placeholder API key — the proxy injects the real key for the chosen account. T
 
 Not redundant: proactive sees the *whole picture* ("weekly 30%, monthly 85% — resets in 2
 weeks"); reactive sees *ground truth per request* ("scrape said 84% but cost just slipped
-to PAYG"). Scrape = steering, cost = odometer. Scrape keeps you sticky; cost catches you
+to PAYG"). The `status` field (`ok`/`rate-limited`) is a cleaner exhaustion signal than
+inferring from 100%. Scrape = steering, cost = odometer. Scrape keeps you sticky; cost catches you
 when the scrape is stale or wrong.
 
 ## Routing
@@ -31,12 +42,19 @@ Per request:
    sticky active key unless the other is ≥8 pts lower. This is the stickiness.
 4. **Reactive override**: a 200 response with `cost>0` on a `go_free` account demotes it
    to `payg` immediately; next request recomputes. Stale scrape can't cost you free tokens.
-5. Both on PAYG → round-robin to spread the two $25 caps.
+5. Both on PAYG → round-robin to spread the N $25 caps.
 
 Non-200 handling is conservative pass-through: **no tier/state mutation** from stray 5xx /
 429 / 402, protecting against transient corruption. The single exception is a self-healing
 **401 cooldown** — a 401 marks that key avoided for 2 min, auto-recovered on the next 200 or
 on cooldown expiry. This covers the revoked-key gap without lasting state corruption.
+
+## Auth
+
+The proxy swaps the auth header to match the upstream endpoint: OpenAI-compat
+(`/v1/chat/completions`) accepts `Authorization: Bearer` or `x-api-key`; anthropic
+(`/v1/messages`) requires `x-api-key`. The proxy sends whichever form the endpoint expects,
+using the chosen account's real API key.
 
 ## Config
 
@@ -50,8 +68,8 @@ on cooldown expiry. This covers the revoked-key gap without lasting state corrup
   "scrape_cache_ttl": "90s",
   "hysteresis_points": 8,
   "tier_safe_pct": 95,
-  "alert_email": "carter2099@pm.me",
-  "smtp_config_path": "/home/carter/scripts/.smtp_config",
+  "alert_email": "you@example.com",
+  "smtp_config_path": "/path/to/.smtp_config",
   "stale_realert_hours": 24,
   "avoid_401_cooldown": "2m",
   "request_timeout": "10m",
@@ -60,8 +78,9 @@ on cooldown expiry. This covers the revoked-key gap without lasting state corrup
 ```
 
 Each account needs: its OpenCode Go API key, its workspace ID, and the `auth` cookie from a
-logged-in dashboard session (scrape auth — *not* the API key). SMTP credentials for the
-cookie-stale alert come from the shared `.smtp_config` file.
+logged-in dashboard session (scrape auth — *not* the API key). **Cookie-stale email alerting
+is optional — leave both `alert_email` and `smtp_config_path` empty to disable.** When
+enabled, SMTP credentials come from the shared `.smtp_config` file.
 
 ## Health
 
@@ -71,15 +90,15 @@ curl http://localhost:8082/health
 ```json
 {
   "status": "ok",
-  "active_key": "carter2099",
+  "active_key": "primary",
   "accounts": [
-    { "name": "carter2099", "tier": "go_free",
+    { "name": "primary", "tier": "go_free",
       "rolling":  {"pct": 0,  "reset_in": "5h", "status": "ok", "present": true},
       "weekly":   {"pct": 0,  "reset_in": "2d", "status": "ok", "present": true},
       "monthly":  {"pct": 0,  "reset_in": "31d","status": "ok", "present": true},
       "payg": {"balance_usd": 8.44, "monthly_usage_usd": 11.56, "monthly_limit_usd": 25, "present": true},
       "last_cost": "0", "last_error": null, "cookie_fresh": true, ... },
-    { "name": "carterbrwn2", "tier": "payg",
+    { "name": "secondary", "tier": "payg",
       "rolling":  {"pct": 100,"reset_in": "36m","status": "rate-limited", "present": true},
       "weekly":   {"pct": 53, "reset_in": "2d", "status": "ok", "present": true},
       "monthly":  {"pct": 26, "reset_in": "28d","status": "ok", "present": true},
@@ -88,31 +107,55 @@ curl http://localhost:8082/health
   ]
 }
 ```
-`tier` is **runtime state**, not an account property — it flips as each account's rolling/weekly/monthly quota rolls over (the two accounts above have swapped these roles since the proxy was first built). `name` is the only stable account identifier.
+`tier` is **runtime state**, not an account property — it flips as each account's rolling/weekly/monthly quota rolls over (the accounts above have swapped these roles since the proxy was first built). `name` is the only stable account identifier.
 
-## Build / deploy / manage
+## Build / deploy
 
+Three install paths:
+
+**(a) Go binary** (see Quick start above):
 ```bash
-cd ~/dev/opencode-go-proxy
-bash release.sh                                    # build → install binary+unit → start
+go build -o opencode-go-proxy .
+go test ./...
+```
+
+**(b) Docker Compose:**
+```bash
+docker compose up -d
+```
+Set `listen_addr` to `0.0.0.0:8082` in `config.json` when running in Docker so the port
+is reachable from outside the container. See the `Dockerfile` and `docker-compose.yml`.
+
+**(c) Systemd user unit** (example):
+```bash
+bash release.sh                     # build → install binary+unit → start
 systemctl --user status opencode-go-proxy
 journalctl --user -u opencode-go-proxy -f
-go test ./...                                      # unit tests (no network)
 ```
+
+**(d) GitHub Releases** — pre-built binaries for Linux and macOS (amd64, arm64) are attached
+to each [release](https://github.com/carter2099/opencode-go-proxy/releases). Download, verify
+with the included SHA-256 checksums, and place on `$PATH`.
 
 ## Pointing a client at the proxy
 
 1. **Base URL** → `http://localhost:8082/v1` (apps that want the full base) or
    `http://localhost:8082` (apps that append `/v1` themselves). Either works; the proxy is
    path-transparent so long as the final URL is `…/v1/chat/completions` or `…/v1/messages`.
-   **For a Docker container** (e.g. Open WebUI), do NOT use `localhost` — that's the
-   container's own loopback. Use `http://host.docker.internal:8082/v1` (with `extra_hosts:
-   - host.docker.internal:host-gateway` in compose), and the host must allow the container's
-   docker-bridge interface in ufw (see "Docker container clients" below).
 2. **API key** → any non-empty placeholder (e.g. `proxy`). The proxy overwrites it with the
    chosen account's real key. The app just needs *something* so its HTTP client sends an
    auth header.
 3. That's it — no `/login` flow with the app; the proxy owns the real keys.
+
+## Docker container clients
+
+For a container client (e.g. Open WebUI) connecting to the proxy on the host, use
+`host.docker.internal` (with `extra_hosts: host-gateway` in the client's compose file) or
+`network_mode: host`. Configure your own firewall to restrict the exposed port.
+
+Example: Open WebUI Admin Settings → Connections → OpenAI API: Base URL
+`http://host.docker.internal:8082/v1`, API key `proxy` (placeholder). The model dropdown
+stays identical (same models from the same upstream).
 
 ## Tests
 
@@ -126,41 +169,8 @@ header swap, and end-to-end proxy flows via `httptest`.
 go test -v ./...
 ```
 
-## Verified empirically (pre-build, 2026-07-07)
-
-- Port 8082 free (8081 = llm-proxy).
-- `cost` field signal confirmed across verified-distinct keys (sha256 differ): healthy key
-  → `cost:"0"` (stream + non-stream); maxed key → `cost:"0.00002260"` non-stream /
-  `cost:"0.00003140"` stream. Lives only in the top-level `cost` field
-  (`usage.estimated_cost` is always 0).
-- `status` field (`ok`/`rate-limited`) emitted alongside `usagePercent`/`resetInSec` — a
-  cleaner exhaustion signal than inferring from 100%.
-- Auth: OpenAI-compat path accepts `Authorization: Bearer` or `x-api-key`; anthropic path
-  requires `x-api-key`. Proxy swaps whichever the request uses.
-
-## Docker container clients (e.g. Open WebUI)
-
-The proxy binds `0.0.0.0:8082` (not loopback) so Docker containers can reach it, but
-**ufw gates it to the docker bridges only** — the LAN still can't reach it (default deny),
-matching the posture of the sibling `llm-proxy` on `:8081`. Two requirements for a container
-client:
-
-1. `host.docker.internal:host-gateway` in the container's compose `extra_hosts` (so the
-   hostname resolves to the host).
-2. A ufw allow rule for the container's actual docker-bridge interface, e.g.
-   `sudo ufw allow in on br-<id> to any port 8082 proto tcp`. The bridge interface is
-   `br-<first 12 of the docker network id>`; find it with `docker network inspect <name>`.
-   **Do not** assume the packet arrives on `docker0` or from `172.23.0.0/16` — those are
-   stale defaults; a container's traffic arrives on whatever bridge its network uses
-   (`172.22`/`172.18`/…) and ufw's `on docker0` rules won't match. The k3s `cni0`/`flannel.1`
-   rules elsewhere in this homelab are the same pattern.
-
-Open WebUI Admin Settings → Connections → OpenAI API: Base URL
-`http://host.docker.internal:8082/v1`, API key `proxy` (placeholder). The model dropdown
-stays identical (same 20 models from the same upstream).
-
 ## Out of v1 (deferred)
 
-- Auto-retry of failed non-stream requests on the other key.
-- Failover to local llm-proxy (free qwen) when both Go subs fully exhausted.
+- Auto-retry of failed non-stream requests on another key.
+- Failover to local llm-proxy (free qwen) when all Go subs fully exhausted.
 - Self-healing expired cookies (manual refresh; email alert only).

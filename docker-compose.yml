@@ -1,0 +1,8 @@
+services:
+  proxy:
+    build: .
+    ports:
+      - "8082:8082"
+    volumes:
+      - "./config.json:/etc/opencode-go-proxy/config.json:ro"
+    restart: unless-stopped

@@ -65,13 +65,11 @@ func sendAlertEmail(cfg Config, acct *account, lastGood time.Time) error {
 		"Last good scrape: %s\n"+
 		"Last scrape error: %s\n\n"+
 		"Fix: refresh that account's auth cookie on opencode.ai, update "+
-		"the auth_cookie field in ~/.config/opencode-go-proxy/config.json, "+
-		"and restart the service:\n"+
-		"  systemctl --user restart opencode-go-proxy\n",
+		"the auth_cookie field in your config.json, and restart the proxy.\n",
 		acct.cfg.Name, acct.cfg.WorkspaceID,
 		humanTime(lastGood), safeErr(acct.lastError))
 
-	msg := buildRFC822(from, to, subject, body)
+	msg := buildRFC822(cfg, from, to, subject, body)
 
 	if err := smtpSend(sc, from, to, []byte(msg)); err != nil {
 		return fmt.Errorf("smtp send: %w", err)
@@ -93,8 +91,15 @@ func safeErr(s string) string {
 	return s
 }
 
+func msgIDDomain(addr string) string {
+	if at := strings.IndexByte(addr, '@'); at >= 0 {
+		return addr[at+1:]
+	}
+	return "localhost"
+}
+
 // buildRFC822 assembles a minimal plain-text email.
-func buildRFC822(from, to, subject, body string) string {
+func buildRFC822(cfg Config, from, to, subject, body string) string {
 	headers := []string{
 		"From: " + from,
 		"To: " + to,
@@ -102,7 +107,7 @@ func buildRFC822(from, to, subject, body string) string {
 		"Date: " + time.Now().UTC().Format(time.RFC1123Z),
 		"MIME-Version: 1.0",
 		"Content-Type: text/plain; charset=utf-8",
-		"Message-Id: <opencode-go-proxy-" + strconv.FormatInt(time.Now().UnixNano(), 10) + "@carter2099.com>",
+		"Message-Id: <opencode-go-proxy-" + strconv.FormatInt(time.Now().UnixNano(), 10) + "@" + msgIDDomain(cfg.AlertEmail) + ">",
 	}
 	return strings.Join(headers, "\r\n") + "\r\n\r\n" + body
 }

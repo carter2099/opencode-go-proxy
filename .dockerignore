@@ -1,4 +1,2 @@
 /opencode-go-proxy
 *.test
-*.out
-/config.json
