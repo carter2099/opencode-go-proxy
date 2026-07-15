@@ -232,7 +232,7 @@ func swapAuth(req *http.Request, src http.Header, apiKey string) {
 	} else if got := src.Get("Authorization"); got != "" {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	} else {
-		// Default: shorter path (most pi openai-compat calls hit /v1).
+		// Default: shorter path (most openai-compat calls hit /v1).
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 }

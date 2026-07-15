@@ -5,7 +5,7 @@ routes each request to the account with the most headroom. Preserves free Go usa
 long as possible, routes to the account with the highest remaining Zen balance when Go
 is exhausted, and degrades safely when cookies/cost signals are unavailable.
 
-Clients (pi, future agents) point at `http://localhost:8082/v1` and use any non-empty
+Clients point at `http://localhost:8082/v1` and use any non-empty
 placeholder API key — the proxy injects the real key for the chosen account. The proxy is
 **path-transparent**: it forwards `/v1/chat/completions` (OpenAI-compat) and `/v1/messages`
 (anthropic) to `https://opencode.ai/zen/go` unchanged except for the auth header.
@@ -167,17 +167,11 @@ stays identical (same models from the same upstream).
 ## Tests
 
 Unit tests cover the cost-field distinguisher (string/number/missing, SSE trailing event),
-the reactive demote override, proactive tier transitions, the scrape parsers (ported from
-and cross-checked against the pi-go-bars TypeScript regexes), cookie-stale re-alert
-suppression, sticky+hysteresis routing, highest-balance PAYG, disable_payg, 401 cooldown + self-heal, the auth
-header swap, and end-to-end proxy flows via `httptest`.
+the reactive demote override, proactive tier transitions, the scrape parsers,
+cookie-stale re-alert suppression, sticky+hysteresis routing, highest-balance PAYG,
+disable_payg, 401 cooldown + self-heal, the auth header swap, and end-to-end proxy
+flows via `httptest`.
 
 ```bash
 go test -v ./...
 ```
-
-## Out of v1 (deferred)
-
-- Auto-retry of failed non-stream requests on another key.
-- Failover to local llm-proxy (free qwen) when all Go subs fully exhausted.
-- Self-healing expired cookies (manual refresh; email alert only).

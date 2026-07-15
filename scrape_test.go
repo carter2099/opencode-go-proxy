@@ -17,7 +17,7 @@ func fixture(t *testing.T, name string) string {
 	return string(b)
 }
 
-// ─── parseBilling (mirrors the pi-go-bars TS unit tests exactly) ─────────────
+// ─── parseBilling ────────────────────────────────────────────────────────────
 
 func TestParseBilling_RealSSR(t *testing.T) {
 	p, errstr := parseBilling(fixture(t, "billing.html"))
