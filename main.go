@@ -94,10 +94,11 @@ func (pc *proxyCore) handleHealth(w http.ResponseWriter, r *http.Request) {
 		snaps = append(snaps, a.snapshot(now))
 	}
 	resp := map[string]interface{}{
-		"status":     statusString(snaps),
-		"active_key": active,
-		"accounts":   snaps,
-		"upstream":   pc.upstream,
+		"status":       statusString(snaps),
+		"active_key":   active,
+		"accounts":     snaps,
+		"upstream":     pc.upstream,
+		"disable_payg": pc.cfg.DisablePayg,
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)

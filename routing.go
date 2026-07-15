@@ -11,7 +11,7 @@ type tier int
 
 const (
 	tierGoFree tier = iota // Go subscription still has free headroom
-	tierPayg               // Go exhausted; spending Zen pay-as-you-go ($25 cap)
+	tierPayg               // Go exhausted; spending Zen pay-as-you-go balance
 )
 
 func (t tier) String() string {
@@ -46,7 +46,8 @@ type account struct {
 	// transition into stale only fires after we know it was fresh once).
 	everFresh bool
 
-	// rrIndex is assigned by the proxy for round-robin ordering on PAYG.
+	// rrIndex is the stable account index assigned at startup, used for
+	// sticky tracking and highest-balance tiebreaking.
 	rrIndex int
 }
 

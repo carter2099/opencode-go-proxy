@@ -1,6 +1,7 @@
 {
   "listen_addr": "0.0.0.0:8082",
   "upstream": "https://opencode.ai/zen/go",
+  "disable_payg": false,
   "poll_interval": "60s",
   "scrape_cache_ttl": "90s",
   "hysteresis_points": 8,

@@ -10,6 +10,10 @@ import (
 // Config is the on-disk JSON config at ~/.config/opencode-go-proxy/config.json.
 type Config struct {
 	ListenAddr         string        `json:"listen_addr"`
+	// DisablePayg, when true, refuses to route to any account whose Go
+	// usage is exhausted — the proxy returns 503 instead of spending Zen
+	// balance. Default false (PAYG is enabled).
+	DisablePayg        bool          `json:"disable_payg"`
 	Upstream           string        `json:"upstream"`
 	PollInterval       duration      `json:"poll_interval"`
 	ScrapeCacheTTL     duration      `json:"scrape_cache_ttl"`

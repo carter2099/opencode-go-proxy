@@ -7,15 +7,13 @@ import (
 )
 
 // picker is the routing core: chooses which account to send a request to,
-// applying sticky+hysteresis, tier preference, and PAYG round-robin.
+// applying sticky+hysteresis, tier preference, and highest-balance PAYG.
 type picker struct {
 	cfg Config
 
 	mu        sync.Mutex
 	accounts  []*account
 	stickyIdx int   // current sticky-active account (−1 unset)
-	rrCursor  int   // round-robin cursor across PAYG-eligible accounts
-	paygRR    bool  // last choice was PAYG round-robin; toggles alternation
 }
 
 func newPicker(cfg Config) *picker {
@@ -31,7 +29,7 @@ func newPicker(cfg Config) *picker {
 }
 
 // choose returns the account to handle this request, or an error if none are
-// available (both avoided → 503).
+// available (both avoided or all PAYG when disable_payg is set → 503).
 func (p *picker) choose(now time.Time) (*account, error) {
 	eligible := make([]*account, 0, len(p.accounts))
 	for _, a := range p.accounts {
@@ -63,14 +61,17 @@ func (p *picker) choose(now time.Time) (*account, error) {
 	if len(free) > 0 {
 		chosen := pickByLoadHysteresis(p, free, now)
 		p.stickyIdx = chosen.rrIndex
-		p.paygRR = false
 		return chosen, nil
 	}
 
-	// All eligible are PAYG → round-robin across them to spread the $25 caps.
-	chosen := roundRobin(p, payg, now)
+
+	// All eligible are PAYG.
+	if p.cfg.DisablePayg {
+		return nil, fmt.Errorf("zen pay-as-you-go disabled and no go_free accounts available")
+	}
+	// Pick the account with the highest Zen balance.
+	chosen := highestBalance(payg)
 	p.stickyIdx = chosen.rrIndex
-	p.paygRR = true
 	return chosen, nil
 }
 
@@ -96,21 +97,22 @@ func pickByLoadHysteresis(p *picker, free []*account, now time.Time) *account {
 	return lowest
 }
 
-// roundRobin alternates accounts across calls. For two accounts this simply
-// toggles; the cursor generalises to N.
-func roundRobin(p *picker, payg []*account, now time.Time) *account {
-	// Sort by rrIndex for a stable cursor.
-	byRR := make([]*account, 0, len(payg))
-	byRR = append(byRR, payg...)
-	for i := 0; i < len(byRR); i++ {
-		for j := i + 1; j < len(byRR); j++ {
-			if byRR[j].rrIndex < byRR[i].rrIndex {
-				byRR[i], byRR[j] = byRR[j], byRR[i]
-			}
+// highestBalance picks the PAYG account with the largest Zen balance. When
+// balances are equal or unscraped (both 0), the lower-rrIndex account wins as a
+// stable tiebreaker.
+func highestBalance(payg []*account) *account {
+	best := payg[0]
+	best.mu.Lock()
+	bestBal := best.payg.BalanceUsd
+	best.mu.Unlock()
+	for _, a := range payg[1:] {
+		a.mu.Lock()
+		bal := a.payg.BalanceUsd
+		a.mu.Unlock()
+		if bal > bestBal {
+			bestBal = bal
+			best = a
 		}
 	}
-	p.rrCursor %= len(byRR)
-	chosen := byRR[p.rrCursor]
-	p.rrCursor = (p.rrCursor + 1) % len(byRR)
-	return chosen
+	return best
 }

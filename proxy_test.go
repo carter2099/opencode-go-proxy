@@ -212,7 +212,7 @@ func TestStaleAlertInfo_TransitionFiresOnce(t *testing.T) {
 	}
 }
 
-// ─── picker: sticky + hysteresis, tier preference, round-robin, 401 ──────────
+// ─── picker: sticky + hysteresis, tier preference, highest-balance, 401 ─────
 
 func twoAccountCfg() Config {
 	return Config{
@@ -225,7 +225,6 @@ func twoAccountCfg() Config {
 		},
 	}
 }
-
 func setLoad(a *account, rollPct float64) {
 	a.mu.Lock()
 	a.roll = UsageWindow{UsagePercent: rollPct, ResetInSec: 3600, Present: true}
@@ -277,7 +276,7 @@ func TestPicker_HysteresisKeepsSticky(t *testing.T) {
 	}
 }
 
-func TestPicker_RoundRobinOnPayg(t *testing.T) {
+func TestPicker_HighestBalanceOnPayg(t *testing.T) {
 	p := newPicker(twoAccountCfg())
 	a, b := p.accounts[0], p.accounts[1]
 	// Force both to PAYG.
@@ -288,19 +287,28 @@ func TestPicker_RoundRobinOnPayg(t *testing.T) {
 	b.tier = tierPayg
 	b.mu.Unlock()
 
+	// Equal balances (0): first account wins (stable tiebreak).
 	c1, _ := p.choose(time.Now())
+	if c1.cfg.Name != "a" {
+		t.Errorf("equal balance tiebreak: got %s, want a", c1.cfg.Name)
+	}
+
+	// b has higher balance → b wins.
+	b.mu.Lock()
+	b.payg.BalanceUsd = 10.0
+	b.mu.Unlock()
 	c2, _ := p.choose(time.Now())
+	if c2.cfg.Name != "b" {
+		t.Errorf("higher balance: got %s, want b", c2.cfg.Name)
+	}
+
+	// a gets an even higher balance → a wins.
+	a.mu.Lock()
+	a.payg.BalanceUsd = 20.0
+	a.mu.Unlock()
 	c3, _ := p.choose(time.Now())
-	if c1.rrIndex != a.rrIndex && c1.rrIndex != b.rrIndex {
-		t.Fatal("first choice out of set")
-	}
-	// Two calls must alternate between distinct accounts.
-	if c1.cfg.Name == c2.cfg.Name {
-		t.Errorf("round-robin must alternate: c1=%s c2=%s (same)", c1.cfg.Name, c2.cfg.Name)
-	}
-	// Third call returns to the first account (1,0,1 for two accounts).
-	if c3.cfg.Name != c1.cfg.Name {
-		t.Errorf("round-robin third call = %s, want %s (period 2)", c3.cfg.Name, c1.cfg.Name)
+	if c3.cfg.Name != "a" {
+		t.Errorf("highest balance: got %s, want a", c3.cfg.Name)
 	}
 }
 
@@ -443,9 +451,9 @@ func TestHandleProxy_BothAvoidedReturns503(t *testing.T) {
 	}
 }
 
-// ─── N-account round-robin: cursor cycles all accounts with no repeats ─────
+// ─── N-account highest-balance: picks the account with the most Zen balance ──
 
-func TestPicker_RoundRobinN(t *testing.T) {
+func TestPicker_HighestBalanceN(t *testing.T) {
 	cfg := Config{
 		HysteresisPoints:  8,
 		TierSafePct:       95,
@@ -458,7 +466,6 @@ func TestPicker_RoundRobinN(t *testing.T) {
 	}
 	p := newPicker(cfg)
 	a, b, c := p.accounts[0], p.accounts[1], p.accounts[2]
-	// Force all three to PAYG.
 	a.mu.Lock()
 	a.tier = tierPayg
 	a.mu.Unlock()
@@ -469,19 +476,55 @@ func TestPicker_RoundRobinN(t *testing.T) {
 	c.tier = tierPayg
 	c.mu.Unlock()
 
-	// Three calls must visit all three distinct accounts.
-	c1, _ := p.choose(time.Now())
-	c2, _ := p.choose(time.Now())
-	c3, _ := p.choose(time.Now())
-	seen := map[int]bool{c1.rrIndex: true, c2.rrIndex: true, c3.rrIndex: true}
-	if len(seen) != 3 {
-		t.Errorf("3-account round-robin visited %d distinct accounts, want 3: %s %s %s",
-			len(seen), c1.cfg.Name, c2.cfg.Name, c3.cfg.Name)
+	// b has the highest balance.
+	b.mu.Lock()
+	b.payg.BalanceUsd = 15.0
+	b.mu.Unlock()
+	c.mu.Lock()
+	c.payg.BalanceUsd = 5.0
+	c.mu.Unlock()
+	// a stays at 0.
+
+	chosen, _ := p.choose(time.Now())
+	if chosen.cfg.Name != "b" {
+		t.Errorf("highest balance (15): got %s, want b", chosen.cfg.Name)
 	}
-	// Fourth call cycles back to first account.
-	c4, _ := p.choose(time.Now())
-	if c4.cfg.Name != c1.cfg.Name {
-		t.Errorf("fourth call = %s, want %s (period 3)", c4.cfg.Name, c1.cfg.Name)
+}
+
+func TestPicker_DisablePayg(t *testing.T) {
+	cfg := Config{
+		DisablePayg:      true,
+		HysteresisPoints: 8,
+		TierSafePct:      95,
+		Avoid401Cooldown: duration(2 * time.Minute),
+		Accounts: []AccountCfg{
+			{Name: "a", APIKey: "sk-a", WorkspaceID: "wrk-a", AuthCookie: "Fe26.2**a"},
+			{Name: "b", APIKey: "sk-b", WorkspaceID: "wrk-b", AuthCookie: "Fe26.2**b"},
+		},
+	}
+	p := newPicker(cfg)
+	a, b := p.accounts[0], p.accounts[1]
+	a.mu.Lock()
+	a.tier = tierPayg
+	a.mu.Unlock()
+	b.mu.Lock()
+	b.tier = tierPayg
+	b.mu.Unlock()
+
+	_, err := p.choose(time.Now())
+	if err == nil {
+		t.Error("DisablePayg should reject when all accounts are PAYG")
+	}
+	// But a go_free account still works.
+	a.mu.Lock()
+	a.tier = tierGoFree
+	a.mu.Unlock()
+	chosen, err := p.choose(time.Now())
+	if err != nil {
+		t.Fatalf("go_free should still work with DisablePayg: %v", err)
+	}
+	if chosen.cfg.Name != "a" {
+		t.Errorf("go_free should be chosen, got %s", chosen.cfg.Name)
 	}
 }
 

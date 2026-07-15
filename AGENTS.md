@@ -23,7 +23,7 @@ Single `package main`, no subpackages.
 |`main.go`|entrypoint, `scrapeLoop`, `scrapeAll`, `/health` handler|
 |`proxy.go`|`proxyCore`, `handleProxy`, 200-cost extraction, `swapAuth`|
 |`routing.go`|`account` runtime state, tier transitions, `applyScrape`/`applyCost`, 401 cooldown, `snapshot`|
-|`picker.go`|`picker.choose`: tier preference → sticky+hysteresis → PAYG round-robin (generalizes to N)|
+|`picker.go`|`picker.choose`: tier preference → sticky+hysteresis → highest-balance PAYG|
 |`scrape.go`|dashboard/billing SSR HTML parsers (`parseDashboard`, `parseBilling`), HTTP fetchers|
 |`config.go`|`Config`/`AccountCfg`, `loadConfig`, JSON `duration` helper|
 |`smtp.go`|optional cookie-stale email alert|

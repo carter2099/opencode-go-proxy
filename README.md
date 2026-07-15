@@ -2,7 +2,7 @@
 
 A local reverse proxy that owns **one or more** OpenCode Go subscriptions and intelligently
 routes each request to the account with the most headroom. Preserves free Go usage as
-long as possible, balances Zen pay-as-you-go ($25 cap each) across all configured accounts when Go
+long as possible, routes to the account with the highest remaining Zen balance when Go
 is exhausted, and degrades safely when cookies/cost signals are unavailable.
 
 Clients (pi, future agents) point at `http://localhost:8082/v1` and use any non-empty
@@ -42,7 +42,7 @@ Per request:
    sticky active key unless the other is ≥8 pts lower. This is the stickiness.
 4. **Reactive override**: a 200 response with `cost>0` on a `go_free` account demotes it
    to `payg` immediately; next request recomputes. Stale scrape can't cost you free tokens.
-5. Both on PAYG → round-robin to spread the N $25 caps.
+5. Both on PAYG → prefer the account with the highest Zen balance.
 
 Non-200 handling is conservative pass-through: **no tier/state mutation** from stray 5xx /
 429 / 402, protecting against transient corruption. The single exception is a self-healing
@@ -64,6 +64,7 @@ using the chosen account's real API key.
 {
   "listen_addr": "127.0.0.1:8082",
   "upstream": "https://opencode.ai/zen/go",
+  "disable_payg": false,
   "poll_interval": "60s",
   "scrape_cache_ttl": "90s",
   "hysteresis_points": 8,
@@ -76,6 +77,10 @@ using the chosen account's real API key.
   "accounts": [ { "name": "...", "api_key": "sk-…", "workspace_id": "wrk_…", "auth_cookie": "Fe26.2**…" } ]
 }
 ```
+
+`disable_payg` (default `false`) — when `true`, the proxy refuses to route to any
+account whose Go usage is exhausted. Returns `503` instead of spending Zen balance.
+Useful when you want to stay strictly within free Go quota.
 
 Each account needs: its OpenCode Go API key, its workspace ID, and the `auth` cookie from a
 logged-in dashboard session (scrape auth — *not* the API key). **Cookie-stale email alerting
@@ -96,15 +101,17 @@ curl http://localhost:8082/health
       "rolling":  {"pct": 0,  "reset_in": "5h", "status": "ok", "present": true},
       "weekly":   {"pct": 0,  "reset_in": "2d", "status": "ok", "present": true},
       "monthly":  {"pct": 0,  "reset_in": "31d","status": "ok", "present": true},
-      "payg": {"balance_usd": 8.44, "monthly_usage_usd": 11.56, "monthly_limit_usd": 25, "present": true},
+      "payg": {"balance_usd": 8.44, "monthly_usage_usd": 11.56, "monthly_limit_usd": 50, "present": true},
       "last_cost": "0", "last_error": null, "cookie_fresh": true, ... },
     { "name": "secondary", "tier": "payg",
       "rolling":  {"pct": 100,"reset_in": "36m","status": "rate-limited", "present": true},
       "weekly":   {"pct": 53, "reset_in": "2d", "status": "ok", "present": true},
       "monthly":  {"pct": 26, "reset_in": "28d","status": "ok", "present": true},
-      "payg": {"balance_usd": 19.14, "monthly_usage_usd": 0.86, "monthly_limit_usd": 25, "present": true},
+      "payg": {"balance_usd": 19.14, "monthly_usage_usd": 0.86, "monthly_limit_usd": 50, "present": true},
       "last_cost": "0.00003450", "last_error": null, "cookie_fresh": true, ... }
-  ]
+  ],
+  "upstream": "https://opencode.ai/zen/go",
+  "disable_payg": false
 }
 ```
 `tier` is **runtime state**, not an account property — it flips as each account's rolling/weekly/monthly quota rolls over (the accounts above have swapped these roles since the proxy was first built). `name` is the only stable account identifier.
@@ -162,7 +169,7 @@ stays identical (same models from the same upstream).
 Unit tests cover the cost-field distinguisher (string/number/missing, SSE trailing event),
 the reactive demote override, proactive tier transitions, the scrape parsers (ported from
 and cross-checked against the pi-go-bars TypeScript regexes), cookie-stale re-alert
-suppression, sticky+hysteresis routing, PAYG round-robin, 401 cooldown + self-heal, the auth
+suppression, sticky+hysteresis routing, highest-balance PAYG, disable_payg, 401 cooldown + self-heal, the auth
 header swap, and end-to-end proxy flows via `httptest`.
 
 ```bash
