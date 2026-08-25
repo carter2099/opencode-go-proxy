@@ -1,9 +1,9 @@
 # opencode-go-proxy
 
 A local reverse proxy that owns **one or more** OpenCode Go subscriptions and intelligently
-routes each request to the account with the most headroom. Preserves free Go usage as
-long as possible, routes to the account with the highest remaining Zen balance when Go
-is exhausted, and degrades safely when cookies/cost signals are unavailable.
+routes each request to the account with the most headroom. It reads quota windows from
+OpenCode's authenticated usage API, preserves free Go usage as long as possible, and
+round-robins across accounts when every subscription is exhausted.
 
 Clients point at `http://localhost:8082/v1` and use any non-empty
 placeholder API key — the proxy injects the real key for the chosen account. The proxy is
@@ -24,14 +24,13 @@ cp config.example.json config.json
 
 | Layer | Source | Role | Fallback if missing |
 |---|---|---|---|
-| **Proactive** | cookie scrape of `/workspace/<id>/go` + `/billing` every 60s | headroom per window → stickiness + balancing | cookie expiry → "unknown"; reactive still drives correctness |
-| **Reactive** | top-level `cost` field in each 200 response | ground truth tier: `0` = Go free, `>0` = PAYG kicked in | always available; proxy routes on this alone if scrape is down |
+| **Proactive** | authenticated `GET /zen/go/v1/usage` every 60s | headroom per window → stickiness + balancing | preserve last good windows, mark usage stale, keep reactive protection |
+| **Reactive** | top-level `cost` field in each 200 response | ground truth tier: `0` = Go free, `>0` = PAYG kicked in | always available; catches usage API lag |
 
-Not redundant: proactive sees the *whole picture* ("weekly 30%, monthly 85% — resets in 2
-weeks"); reactive sees *ground truth per request* ("scrape said 84% but cost just slipped
-to PAYG"). The `status` field (`ok`/`rate-limited`) is a cleaner exhaustion signal than
-inferring from 100%. Scrape = steering, cost = odometer. Scrape keeps you sticky; cost catches you
-when the scrape is stale or wrong.
+The API returns rolling, weekly, and monthly percentages, statuses, and absolute reset
+timestamps. The `status` field (`ok`/`rate-limited`) is authoritative for exhaustion.
+The reactive cost signal protects against a delayed poll: a paid response immediately
+demotes that account before the next request is routed.
 
 ## Routing
 
@@ -41,8 +40,8 @@ Per request:
 3. Among same-tier, pick lower load. **Hysteresis (default 8 pts)** — don't switch the
    sticky active key unless the other is ≥8 pts lower. This is the stickiness.
 4. **Reactive override**: a 200 response with `cost>0` on a `go_free` account demotes it
-   to `payg` immediately; next request recomputes. Stale scrape can't cost you free tokens.
-5. Both on PAYG → prefer the account with the highest Zen balance.
+   to `payg` immediately; next request recomputes.
+5. All PAYG → round-robin. The usage API does not expose Zen balances.
 
 Non-200 handling is conservative pass-through: **no tier/state mutation** from stray 5xx /
 429 / 402, protecting against transient corruption. The single exception is a self-healing
@@ -66,15 +65,14 @@ using the chosen account's real API key.
   "upstream": "https://opencode.ai/zen/go",
   "disable_payg": false,
   "poll_interval": "60s",
-  "scrape_cache_ttl": "90s",
   "hysteresis_points": 8,
   "tier_safe_pct": 95,
-  "alert_email": "you@example.com",
-  "smtp_config_path": "/path/to/.smtp_config",
-  "stale_realert_hours": 24,
   "avoid_401_cooldown": "2m",
   "request_timeout": "10m",
-  "accounts": [ { "name": "...", "api_key": "sk-…", "workspace_id": "wrk_…", "auth_cookie": "Fe26.2**…" } ]
+  "accounts": [
+    {"name": "primary", "api_key": "sk-…"},
+    {"name": "secondary", "api_key": "sk-…"}
+  ]
 }
 ```
 
@@ -82,23 +80,9 @@ using the chosen account's real API key.
 account whose Go usage is exhausted. Returns `503` instead of spending Zen balance.
 Useful when you want to stay strictly within free Go quota.
 
-Each account needs: its OpenCode Go API key, its workspace ID, and the `auth` cookie from a
-logged-in dashboard session (scrape auth — *not* the API key). **Cookie-stale email alerting
-is optional — leave both `alert_email` and `smtp_config_path` empty to disable.** When
-enabled, SMTP credentials come from the shared `.smtp_config` file.
-
-### Getting your auth cookie
-
-1. Log in to [opencode.ai](https://opencode.ai) in your browser.
-2. Open DevTools (`F12` or `Ctrl+Shift+I` / `Cmd+Option+I`).
-3. Go to **Application** (Chrome/Edge) or **Storage** (Firefox) → **Cookies** → `https://opencode.ai`.
-4. Find the cookie named **`auth`** and copy its **Value** (a long token starting with `Fe26.2**…`).
-5. Paste that value into your `config.json` as the `auth_cookie` field for each account.
-
-The cookie expires periodically (typically days to weeks). When it does, scrapes will
-fail with a redirect-to-login error; the proxy logs it, the `/health` endpoint shows
-`"cookie_fresh": false`, and — if configured — you'll get an email alert. Repeat the
-steps above to refresh it, update `config.json`, and restart the proxy.
+Each account needs only its name and OpenCode Go API key. The proxy uses that same key
+for inference and `GET /zen/go/v1/usage`; no workspace ID, browser cookie, or dashboard
+session is required.
 
 ## Health
 
@@ -110,19 +94,28 @@ curl http://localhost:8082/health
   "status": "ok",
   "active_key": "primary",
   "accounts": [
-    { "name": "primary", "tier": "go_free",
-      "rolling":  {"pct": 0,  "reset_in": "5h", "status": "ok", "present": true},
-      "weekly":   {"pct": 0,  "reset_in": "2d", "status": "ok", "present": true},
-      "monthly":  {"pct": 0,  "reset_in": "31d","status": "ok", "present": true},
-      "payg": {"balance_usd": 8.44, "monthly_usage_usd": 11.56, "monthly_limit_usd": 50, "present": true},
-      "last_cost": "0", "last_error": null, "cookie_fresh": true, ... },
-    { "name": "secondary", "tier": "payg",
-      "rolling":  {"pct": 100,"reset_in": "36m","status": "rate-limited", "present": true},
-      "weekly":   {"pct": 53, "reset_in": "2d", "status": "ok", "present": true},
-      "monthly":  {"pct": 26, "reset_in": "28d","status": "ok", "present": true},
-      "payg": {"balance_usd": 19.14, "monthly_usage_usd": 0.86, "monthly_limit_usd": 50, "present": true},
-      "last_cost": "0.00003450", "last_error": null, "cookie_fresh": true, ... }
+    {
+      "name": "primary",
+      "tier": "go_free",
+      "rolling": {"pct": 0, "reset_in": "5h", "status": "ok", "present": true},
+      "weekly": {"pct": 17, "reset_in": "5d", "status": "ok", "present": true},
+      "monthly": {"pct": 42, "reset_in": "21d", "status": "ok", "present": true},
+      "last_cost": "0",
+      "last_error": "",
+      "usage_fresh": true,
+      "last_usage_at": "2026-08-25T00:00:00Z",
+      "avoided": false
+    }
   ],
+  "aggregate": {
+    "total_accounts": 1,
+    "active_accounts": 1,
+    "max_rolling_pct": 0,
+    "max_weekly_pct": 17,
+    "max_monthly_pct": 42,
+    "any_avoided": false,
+    "any_usage_stale": false
+  },
   "upstream": "https://opencode.ai/zen/go",
   "disable_payg": false
 }
@@ -179,10 +172,10 @@ stays identical (same models from the same upstream).
 
 ## Tests
 
-Unit tests cover the cost-field distinguisher (string/number/missing, SSE trailing event),
-the reactive demote override, proactive tier transitions, the scrape parsers,
-cookie-stale re-alert suppression, sticky+hysteresis routing, highest-balance PAYG,
-disable_payg, 401 cooldown + self-heal, the auth header swap, and end-to-end proxy
+Unit tests cover authenticated usage API requests and response validation, the cost-field
+distinguisher (string/number/missing, SSE trailing event), proactive and reactive tier
+transitions, stale-data preservation, sticky+hysteresis routing, PAYG round-robin,
+`disable_payg`, 401 cooldown + self-heal, auth header swapping, and end-to-end proxy
 flows via `httptest`.
 
 ```bash

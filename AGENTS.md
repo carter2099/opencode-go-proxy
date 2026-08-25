@@ -20,24 +20,23 @@ Single `package main`, no subpackages.
 
 |File|Role|
 |---|---|
-|`main.go`|entrypoint, `scrapeLoop`, `scrapeAll`, `/health` handler|
+|`main.go`|entrypoint, `usageLoop`, `pollUsage`, `/health` handler|
 |`proxy.go`|`proxyCore`, `handleProxy`, 200-cost extraction, `swapAuth`|
-|`routing.go`|`account` runtime state, tier transitions, `applyScrape`/`applyCost`, 401 cooldown, `snapshot`|
-|`picker.go`|`picker.choose`: tier preference → sticky+hysteresis → highest-balance PAYG|
-|`scrape.go`|dashboard/billing SSR HTML parsers (`parseDashboard`, `parseBilling`), HTTP fetchers|
+|`routing.go`|`account` runtime state, tier transitions, `applyUsage`/`applyCost`, 401 cooldown, `snapshot`|
+|`picker.go`|`picker.choose`: tier preference → sticky+hysteresis → PAYG round-robin|
+|`usage.go`|authenticated `/zen/go/v1/usage` client and strict response parser|
 |`config.go`|`Config`/`AccountCfg`, `loadConfig`, JSON `duration` helper|
-|`smtp.go`|optional cookie-stale email alert|
-|`proxy_test.go` / `scrape_test.go`|unit tests; `testdata/*.html` scrape fixtures|
+|`proxy_test.go` / `usage_test.go`|unit and `httptest` coverage|
 
 ## Invariants (do not violate)
 
 - Non-200 responses are pass-through with **no tier/state mutation** — the only exception is the 401 cooldown (`mark401`/`clear401On200`), which self-heals on the next 200.
 - The top-level `cost` field in a 200 body is ground truth: `cost>0` on a `go_free` account demotes it to `payg` immediately (`applyCost`).
 - `tier` is runtime state, not an account property; `name` is the only stable account identifier.
-- Scrape (`/go` + `/billing`) steers; `cost` verifies. A stale scrape must never cost free tokens — the reactive override catches it.
+- The authenticated usage API steers; `cost` verifies. A stale poll must never cost free tokens — the reactive override catches it.
 
 ## Conventions
 
 - Mutex per account (`account.mu`) and a picker mutex (`picker.mu`); `snapshot` is the only `/health` read path.
 - Config is JSON with `time.Duration` strings (the `duration` UnmarshalJSON helper).
-- Secrets (`api_key`, `auth_cookie`) live only in `config.json` (gitignored).
+- API keys live only in `config.json` (gitignored).

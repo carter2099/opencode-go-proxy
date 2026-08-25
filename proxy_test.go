@@ -109,7 +109,7 @@ func TestExtractCostFromSSE_SkipsInferenceCostTelemetry(t *testing.T) {
 // ─── applyCost: the reactive demote override ────────────────────────────────
 
 func newTestAccount(name string, t tier) *account {
-	return &account{cfg: AccountCfg{Name: name, APIKey: "sk-test-" + name, WorkspaceID: "wrk_t_" + name, AuthCookie: "Fe26.2**test"}, tier: t}
+	return &account{cfg: AccountCfg{Name: name, APIKey: "sk-test-" + name}, tier: t}
 }
 
 func TestApplyCost_DemotesGoFreeOnPositiveCost(t *testing.T) {
@@ -139,95 +139,70 @@ func TestApplyCost_AlreadyPaygStays(t *testing.T) {
 	}
 }
 
-// ─── applyScrape: proactive tier + stale transition ───────────────────────
+// ─── applyUsage: proactive tier + freshness ─────────────────────────────────
 
-func TestApplyScrape_StaleSetsCookieFalseAndError(t *testing.T) {
-	a := newTestAccount("a", tierGoFree)
-	// Make it "ever fresh" first.
-	good := UsageData{Rolling: UsageWindow{UsagePercent: 12, ResetInSec: 3600, Present: true}, HasAny: true}
-	a.applyScrape(good, PaygData{}, time.Now())
-	if !a.cookieFresh || !a.everFresh {
-		t.Fatal("precondition: should be fresh after good scrape")
-	}
-	// Now a stale scrape (redirect/login → no windows, error set).
-	stale := UsageData{Error: "session expired"}
-	a.applyScrape(stale, PaygData{}, time.Now())
-	if a.cookieFresh {
-		t.Error("cookieFresh must be false after stale scrape")
-	}
-	if a.lastError == "" {
-		t.Error("lastError must record the scrape failure")
+func testUsage(rolling, weekly, monthly float64) UsageData {
+	return UsageData{
+		Rolling: UsageWindow{UsagePercent: rolling, Status: "ok", Present: true},
+		Weekly:  UsageWindow{UsagePercent: weekly, Status: "ok", Present: true},
+		Monthly: UsageWindow{UsagePercent: monthly, Status: "ok", Present: true},
 	}
 }
 
-func TestApplyScrape_RateLimitedStatusDemotes(t *testing.T) {
-	a := newTestAccount("a", tierGoFree)
-	monRateLimited := UsageData{
-		Monthly: UsageWindow{UsagePercent: 100, ResetInSec: 2592000, Status: "rate-limited", Present: true},
-		HasAny:  true,
-	}
-	a.applyScrape(monRateLimited, PaygData{}, time.Now())
-	if a.tier != tierPayg {
-		t.Errorf("rate-limited monthly should demote to payg, got %s", a.tier)
-	}
-}
-
-func TestApplyScrape_FreshWindowsKeepGoFree(t *testing.T) {
-	a := newTestAccount("a", tierPayg) // start payg
-	good := UsageData{
-		Rolling: UsageWindow{UsagePercent: 4, ResetInSec: 3600, Present: true},
-		Weekly:  UsageWindow{UsagePercent: 1, ResetInSec: 604800, Present: true},
-		Monthly: UsageWindow{UsagePercent: 0, ResetInSec: 2592000, Present: true},
-		HasAny:  true,
-	}
-	a.applyScrape(good, PaygData{}, time.Now())
-	if a.tier != tierGoFree {
-		t.Errorf("reset windows should promote back to go_free, got %s", a.tier)
-	}
-}
-
-// ─── stale-alert re-suppression ───────────────────────────────────────────────
-
-func TestStaleAlertInfo_TransitionFiresOnce(t *testing.T) {
+func TestApplyUsageErrorMarksStaleAndPreservesWindows(t *testing.T) {
 	a := newTestAccount("a", tierGoFree)
 	now := time.Now()
-	// Never fresh yet → no alert.
-	if a.staleAlertInfo(now, 24*time.Hour) {
-		t.Error("should not alert before ever being fresh")
+	a.applyUsage(testUsage(12, 8, 4), now, 95)
+	if !a.usageFresh {
+		t.Fatal("usage should be fresh after a successful API response")
 	}
-	// Good scrape.
-	a.applyScrape(UsageData{Rolling: UsageWindow{UsagePercent: 12, ResetInSec: 3600, Present: true}, HasAny: true}, PaygData{}, now)
-	// Transition to stale.
-	a.applyScrape(UsageData{Error: "session expired"}, PaygData{}, now.Add(time.Second))
-	if !a.staleAlertInfo(now.Add(2*time.Second), 24*time.Hour) {
-		t.Error("fresh→stale transition should alert")
+
+	a.markUsageError(http.ErrHandlerTimeout)
+	if a.usageFresh {
+		t.Error("usageFresh must be false after an API error")
 	}
-	// Immediately again → suppressed (re-alert window not elapsed).
-	if a.staleAlertInfo(now.Add(3*time.Second), 24*time.Hour) {
-		t.Error("re-alert too soon should be suppressed")
+	if a.lastError == "" {
+		t.Error("lastError must record the usage API failure")
 	}
-	// After the re-alert window → re-alert.
-	if !a.staleAlertInfo(now.Add(25*time.Hour), 24*time.Hour) {
-		t.Error("re-alert window elapsed should re-alert")
+	if a.roll.UsagePercent != 12 {
+		t.Errorf("last good rolling percent = %v, want 12", a.roll.UsagePercent)
 	}
 }
 
-// ─── picker: sticky + hysteresis, tier preference, highest-balance, 401 ─────
+func TestApplyUsageRateLimitedStatusDemotes(t *testing.T) {
+	a := newTestAccount("a", tierGoFree)
+	data := testUsage(10, 20, 80)
+	data.Weekly.Status = "rate-limited"
+	a.applyUsage(data, time.Now(), 95)
+	if a.tier != tierPayg {
+		t.Errorf("a rate-limited window should demote to payg, got %s", a.tier)
+	}
+}
+
+func TestApplyUsageFreshWindowsPromoteGoFree(t *testing.T) {
+	a := newTestAccount("a", tierPayg)
+	a.applyUsage(testUsage(4, 1, 0), time.Now(), 95)
+	if a.tier != tierGoFree {
+		t.Errorf("fresh windows should promote back to go_free, got %s", a.tier)
+	}
+}
+
+// ─── picker: sticky + hysteresis, tier preference, PAYG round-robin, 401 ────
 
 func twoAccountCfg() Config {
 	return Config{
-		HysteresisPoints:  8,
-		TierSafePct:       95,
-		Avoid401Cooldown:  duration(2 * time.Minute),
+		HysteresisPoints: 8,
+		TierSafePct:      95,
+		Avoid401Cooldown: duration(2 * time.Minute),
 		Accounts: []AccountCfg{
-			{Name: "a", APIKey: "sk-a", WorkspaceID: "wrk-a", AuthCookie: "Fe26.2**a"},
-			{Name: "b", APIKey: "sk-b", WorkspaceID: "wrk-b", AuthCookie: "Fe26.2**b"},
+			{Name: "a", APIKey: "sk-a"},
+			{Name: "b", APIKey: "sk-b"},
 		},
 	}
 }
 func setLoad(a *account, rollPct float64) {
 	a.mu.Lock()
-	a.roll = UsageWindow{UsagePercent: rollPct, ResetInSec: 3600, Present: true}
+	a.roll = UsageWindow{UsagePercent: rollPct, Status: "ok", Present: true}
 	a.mu.Unlock()
 }
 
@@ -276,39 +251,23 @@ func TestPicker_HysteresisKeepsSticky(t *testing.T) {
 	}
 }
 
-func TestPicker_HighestBalanceOnPayg(t *testing.T) {
+func TestPicker_RoundRobinOnPayg(t *testing.T) {
 	p := newPicker(twoAccountCfg())
-	a, b := p.accounts[0], p.accounts[1]
-	// Force both to PAYG.
-	a.mu.Lock()
-	a.tier = tierPayg
-	a.mu.Unlock()
-	b.mu.Lock()
-	b.tier = tierPayg
-	b.mu.Unlock()
-
-	// Equal balances (0): first account wins (stable tiebreak).
-	c1, _ := p.choose(time.Now())
-	if c1.cfg.Name != "a" {
-		t.Errorf("equal balance tiebreak: got %s, want a", c1.cfg.Name)
+	for _, account := range p.accounts {
+		account.mu.Lock()
+		account.tier = tierPayg
+		account.mu.Unlock()
 	}
 
-	// b has higher balance → b wins.
-	b.mu.Lock()
-	b.payg.BalanceUsd = 10.0
-	b.mu.Unlock()
-	c2, _ := p.choose(time.Now())
-	if c2.cfg.Name != "b" {
-		t.Errorf("higher balance: got %s, want b", c2.cfg.Name)
-	}
-
-	// a gets an even higher balance → a wins.
-	a.mu.Lock()
-	a.payg.BalanceUsd = 20.0
-	a.mu.Unlock()
-	c3, _ := p.choose(time.Now())
-	if c3.cfg.Name != "a" {
-		t.Errorf("highest balance: got %s, want a", c3.cfg.Name)
+	want := []string{"a", "b", "a"}
+	for i, name := range want {
+		chosen, err := p.choose(time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if chosen.cfg.Name != name {
+			t.Errorf("choice %d = %s, want %s", i, chosen.cfg.Name, name)
+		}
 	}
 }
 
@@ -397,7 +356,7 @@ func TestHandleProxy_NonStreamCostDemoteAndKeySwap(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	cfg := Config{Upstream: upstream.URL, RequestTimeout: duration(10 * time.Second), Avoid401Cooldown: duration(2 * time.Minute), Accounts: []AccountCfg{{Name: "a", APIKey: "sk-a", WorkspaceID: "wrk-a", AuthCookie: "Fe26.2**a"}}}
+	cfg := Config{Upstream: upstream.URL, RequestTimeout: duration(10 * time.Second), Avoid401Cooldown: duration(2 * time.Minute), Accounts: []AccountCfg{{Name: "a", APIKey: "sk-a"}}}
 	pc := newProxyCore(cfg)
 
 	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewBufferString(`{"model":"kimi-k2.5","stream":false}`))
@@ -421,7 +380,7 @@ func TestHandleProxy_401TriggersCooldown(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	cfg := Config{Upstream: upstream.URL, RequestTimeout: duration(10 * time.Second), Avoid401Cooldown: duration(2 * time.Minute), Accounts: []AccountCfg{{Name: "a", APIKey: "sk-a", WorkspaceID: "wrk-a", AuthCookie: "Fe26.2**a"}}}
+	cfg := Config{Upstream: upstream.URL, RequestTimeout: duration(10 * time.Second), Avoid401Cooldown: duration(2 * time.Minute), Accounts: []AccountCfg{{Name: "a", APIKey: "sk-a"}}}
 	pc := newProxyCore(cfg)
 
 	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewBufferString(`{}`))
@@ -439,7 +398,7 @@ func TestHandleProxy_401TriggersCooldown(t *testing.T) {
 }
 
 func TestHandleProxy_BothAvoidedReturns503(t *testing.T) {
-	cfg := Config{Upstream: "http://example.invalid", RequestTimeout: duration(time.Second), Avoid401Cooldown: duration(2 * time.Minute), Accounts: []AccountCfg{{Name: "a", APIKey: "k", WorkspaceID: "w", AuthCookie: "c"}}}
+	cfg := Config{Upstream: "http://example.invalid", RequestTimeout: duration(time.Second), Avoid401Cooldown: duration(2 * time.Minute), Accounts: []AccountCfg{{Name: "a", APIKey: "k"}}}
 	pc := newProxyCore(cfg)
 	pc.picker.accounts[0].mark401(10*time.Minute, time.Now())
 
@@ -451,43 +410,35 @@ func TestHandleProxy_BothAvoidedReturns503(t *testing.T) {
 	}
 }
 
-// ─── N-account highest-balance: picks the account with the most Zen balance ──
+// ─── N-account PAYG round-robin ─────────────────────────────────────────────
 
-func TestPicker_HighestBalanceN(t *testing.T) {
+func TestPicker_RoundRobinN(t *testing.T) {
 	cfg := Config{
-		HysteresisPoints:  8,
-		TierSafePct:       95,
-		Avoid401Cooldown:  duration(2 * time.Minute),
+		HysteresisPoints: 8,
+		TierSafePct:      95,
+		Avoid401Cooldown: duration(2 * time.Minute),
 		Accounts: []AccountCfg{
-			{Name: "a", APIKey: "sk-a", WorkspaceID: "wrk-a", AuthCookie: "Fe26.2**a"},
-			{Name: "b", APIKey: "sk-b", WorkspaceID: "wrk-b", AuthCookie: "Fe26.2**b"},
-			{Name: "c", APIKey: "sk-c", WorkspaceID: "wrk-c", AuthCookie: "Fe26.2**c"},
+			{Name: "a", APIKey: "sk-a"},
+			{Name: "b", APIKey: "sk-b"},
+			{Name: "c", APIKey: "sk-c"},
 		},
 	}
 	p := newPicker(cfg)
-	a, b, c := p.accounts[0], p.accounts[1], p.accounts[2]
-	a.mu.Lock()
-	a.tier = tierPayg
-	a.mu.Unlock()
-	b.mu.Lock()
-	b.tier = tierPayg
-	b.mu.Unlock()
-	c.mu.Lock()
-	c.tier = tierPayg
-	c.mu.Unlock()
+	for _, account := range p.accounts {
+		account.mu.Lock()
+		account.tier = tierPayg
+		account.mu.Unlock()
+	}
 
-	// b has the highest balance.
-	b.mu.Lock()
-	b.payg.BalanceUsd = 15.0
-	b.mu.Unlock()
-	c.mu.Lock()
-	c.payg.BalanceUsd = 5.0
-	c.mu.Unlock()
-	// a stays at 0.
-
-	chosen, _ := p.choose(time.Now())
-	if chosen.cfg.Name != "b" {
-		t.Errorf("highest balance (15): got %s, want b", chosen.cfg.Name)
+	want := []string{"a", "b", "c", "a"}
+	for i, name := range want {
+		chosen, err := p.choose(time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if chosen.cfg.Name != name {
+			t.Errorf("choice %d = %s, want %s", i, chosen.cfg.Name, name)
+		}
 	}
 }
 
@@ -498,8 +449,8 @@ func TestPicker_DisablePayg(t *testing.T) {
 		TierSafePct:      95,
 		Avoid401Cooldown: duration(2 * time.Minute),
 		Accounts: []AccountCfg{
-			{Name: "a", APIKey: "sk-a", WorkspaceID: "wrk-a", AuthCookie: "Fe26.2**a"},
-			{Name: "b", APIKey: "sk-b", WorkspaceID: "wrk-b", AuthCookie: "Fe26.2**b"},
+			{Name: "a", APIKey: "sk-a"},
+			{Name: "b", APIKey: "sk-b"},
 		},
 	}
 	p := newPicker(cfg)
@@ -525,22 +476,5 @@ func TestPicker_DisablePayg(t *testing.T) {
 	}
 	if chosen.cfg.Name != "a" {
 		t.Errorf("go_free should be chosen, got %s", chosen.cfg.Name)
-	}
-}
-
-// ─── alertingEnabled: opt-in gate for cookie-stale emails ───────────────────
-
-func TestAlertingEnabled(t *testing.T) {
-	if alertingEnabled(Config{}) {
-		t.Error("empty config must not enable alerting")
-	}
-	if alertingEnabled(Config{AlertEmail: "x@y.com", SMTPConfigPath: ""}) {
-		t.Error("SMTPConfigPath empty must not enable alerting")
-	}
-	if alertingEnabled(Config{AlertEmail: "", SMTPConfigPath: "/p"}) {
-		t.Error("AlertEmail empty must not enable alerting")
-	}
-	if !alertingEnabled(Config{AlertEmail: "x@y.com", SMTPConfigPath: "/p"}) {
-		t.Error("both set must enable alerting")
 	}
 }

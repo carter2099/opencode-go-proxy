@@ -32,22 +32,15 @@ type account struct {
 	roll         UsageWindow
 	week         UsageWindow
 	mon          UsageWindow
-	payg         PaygData
 	tier         tier
 	lastCost     string
 	lastError    string
-	cookieFresh  bool
-	lastScrapeAt time.Time
+	usageFresh   bool
+	lastUsageAt  time.Time
 	avoidedUntil time.Time
 
-	// stale-cookie alert suppression: last time we emailed about this account.
-	lastStaleAlert time.Time
-	// everFresh tracks whether we've ever seen a fresh scrape (so the very first
-	// transition into stale only fires after we know it was fresh once).
-	everFresh bool
-
 	// rrIndex is the stable account index assigned at startup, used for
-	// sticky tracking and highest-balance tiebreaking.
+	// sticky tracking and PAYG round-robin.
 	rrIndex int
 }
 
@@ -94,46 +87,36 @@ func (a *account) clear401(now time.Time) {
 	}
 }
 
-// applyScrape merges freshly-scraped usage + billing into the account, updates
-// the tier from proactive signals, and reports the fresh→stale transition so
-// the caller can email the alert.
-func (a *account) applyScrape(d UsageData, p PaygData, now time.Time) (wentStale bool) {
+// applyUsage merges a successful API response and updates the proactive tier.
+func (a *account) applyUsage(d UsageData, now time.Time, safePct float64) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if d.Error != "" || !d.HasAny {
-		// scrape failed / login redirect
-		a.lastError = d.Error
-		wasFresh := a.everFresh && a.cookieFresh
-		a.cookieFresh = false
-		return wasFresh // true only if we actually flipped fresh→stale
-	}
+
 	a.lastError = ""
 	a.roll = d.Rolling
 	a.week = d.Weekly
 	a.mon = d.Monthly
-	a.payg = p
-	a.lastScrapeAt = now
-	a.cookieFresh = true
-	a.everFresh = true
-	// Proactive tier recompute from scrape alone. The reactive cost-flip can
-	// only demote (handled in applyCost); scrape can promote back when a window
-	// resets, UNLESS a prior reactive demotion set lastCost>0 and we haven't yet
-	// seen a cost==0 response. We let scrape promote: if the heaviest window is
-	// under the safe threshold AND its status isn't rate-limited, consider free.
+	a.lastUsageAt = now
+	a.usageFresh = true
+
 	heaviest := maxWindow(a.roll, a.week, a.mon)
-	if heaviest.Present && heaviest.UsagePercent < tierSafeThreshold && heaviest.Status != "rate-limited" {
-		// Only promote if we're not currently flagged PAYG by a recent reactive
-		// hit whose cost we haven't cleared. Clearing requires scrape to show
-		// the window reset — which is exactly this case.
-		a.tier = tierGoFree
-	} else if heaviest.Present && (heaviest.UsagePercent >= 100 || heaviest.Status == "rate-limited") {
+	switch {
+	case anyRateLimited(a.roll, a.week, a.mon):
 		a.tier = tierPayg
+	case heaviest.Present && heaviest.UsagePercent >= 100:
+		a.tier = tierPayg
+	case heaviest.Present && heaviest.UsagePercent < safePct:
+		a.tier = tierGoFree
 	}
-	return false
 }
 
-// tierSafeThreshold is the load boundary for proactive go_free classification.
-const tierSafeThreshold = 95.0
+// markUsageError preserves the last good windows while surfacing stale API data.
+func (a *account) markUsageError(err error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.usageFresh = false
+	a.lastError = err.Error()
+}
 
 func maxWindow(ws ...UsageWindow) UsageWindow {
 	var m UsageWindow
@@ -145,6 +128,15 @@ func maxWindow(ws ...UsageWindow) UsageWindow {
 	return m
 }
 
+func anyRateLimited(ws ...UsageWindow) bool {
+	for _, w := range ws {
+		if w.Present && w.Status == "rate-limited" {
+			return true
+		}
+	}
+	return false
+}
+
 // applyCost is the reactive override: a 200 response's top-level `cost` field
 // is ground truth. cost>0 on a go_free account demotes it immediately.
 func (a *account) applyCost(cost string) {
@@ -152,7 +144,7 @@ func (a *account) applyCost(cost string) {
 	defer a.mu.Unlock()
 	a.lastCost = cost
 	if costIsPayg(cost) && a.tier == tierGoFree {
-		a.tier = tierPayg // reactive demote — stale scrape can't cost you free tokens
+		a.tier = tierPayg // reactive demote — stale usage data cannot hide paid requests
 	}
 }
 
@@ -163,23 +155,6 @@ func (a *account) clear401On200(now time.Time) {
 	a.avoidedUntil = time.Time{}
 }
 
-// staleAlertInfo decides whether a cookie-stale alert should fire now — both the
-// fresh→stale transition (lastStaleAlert zero) and the periodic re-alert. It
-// atomically stamps lastStaleAlert when it returns true, so the caller just
-// sends the email on a true return.
-func (a *account) staleAlertInfo(now time.Time, realert time.Duration) bool {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.cookieFresh || !a.everFresh {
-		return false
-	}
-	if a.lastStaleAlert.IsZero() || now.Sub(a.lastStaleAlert) >= realert {
-		a.lastStaleAlert = now
-		return true
-	}
-	return false
-}
-
 // costIsPayg reports whether the cost field indicates pay-as-you-go charged.
 func costIsPayg(cost string) bool {
 	f, err := strconv.ParseFloat(cost, 64)
@@ -188,59 +163,57 @@ func costIsPayg(cost string) bool {
 
 // snapshot is an immutable read of account state for /health rendering.
 type snapshot struct {
-	Name          string    `json:"name"`
-	Tier          string    `json:"tier"`
-	APIKeyTail    string    `json:"api_key_tail"`
-	Rolling       windowJSON `json:"rolling"`
-	Weekly        windowJSON `json:"weekly"`
-	Monthly       windowJSON `json:"monthly"`
-	Payg          paygJSON   `json:"payg"`
-	LastCost      string     `json:"last_cost"`
-	LastError     string     `json:"last_error"`
-	CookieFresh   bool       `json:"cookie_fresh"`
-	LastScrapeAt  *time.Time `json:"last_scrape_at,omitempty"`
-	Avoided       bool       `json:"avoided"`
-	AvoidedUntil  *time.Time `json:"avoided_until,omitempty"`
+	Name         string     `json:"name"`
+	Tier         string     `json:"tier"`
+	APIKeyTail   string     `json:"api_key_tail"`
+	Rolling      windowJSON `json:"rolling"`
+	Weekly       windowJSON `json:"weekly"`
+	Monthly      windowJSON `json:"monthly"`
+	LastCost     string     `json:"last_cost"`
+	LastError    string     `json:"last_error"`
+	UsageFresh   bool       `json:"usage_fresh"`
+	LastUsageAt  *time.Time `json:"last_usage_at,omitempty"`
+	Avoided      bool       `json:"avoided"`
+	AvoidedUntil *time.Time `json:"avoided_until,omitempty"`
 }
 
 type windowJSON struct {
-	Pct      float64 `json:"pct"`
-	ResetIn  string  `json:"reset_in"`
-	Status   string  `json:"status"`
-	Present  bool    `json:"present"`
-}
-
-type paygJSON struct {
-	BalanceUsd      float64 `json:"balance_usd"`
-	MonthlyUsageUsd float64 `json:"monthly_usage_usd"`
-	MonthlyLimitUsd float64 `json:"monthly_limit_usd"`
-	Present         bool    `json:"present"`
+	Pct     float64 `json:"pct"`
+	ResetIn string  `json:"reset_in"`
+	Status  string  `json:"status"`
+	Present bool    `json:"present"`
 }
 
 func (a *account) snapshot(now time.Time) snapshot {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	s := snapshot{
-		Name:       a.cfg.Name,
-		Tier:       a.tier.String(),
-		APIKeyTail: tail(a.cfg.APIKey, 4),
-		Rolling:    windowJSON{Pct: a.roll.UsagePercent, ResetIn: durStr(a.roll.ResetInSec), Status: a.roll.Status, Present: a.roll.Present},
-		Weekly:     windowJSON{Pct: a.week.UsagePercent, ResetIn: durStr(a.week.ResetInSec), Status: a.week.Status, Present: a.week.Present},
-		Monthly:    windowJSON{Pct: a.mon.UsagePercent, ResetIn: durStr(a.mon.ResetInSec), Status: a.monthStatusLocked(), Present: a.mon.Present},
-		Payg:       paygJSON{BalanceUsd: a.payg.BalanceUsd, MonthlyUsageUsd: a.payg.MonthlyUsageUsd, MonthlyLimitUsd: a.payg.MonthlyLimitUsd, Present: a.payg.HasAny},
-		LastCost:   a.lastCost,
-		LastError:  a.lastError,
-		CookieFresh: a.cookieFresh,
-		LastScrapeAt: tptr(a.lastScrapeAt),
-		Avoided:    now.Before(a.avoidedUntil),
+	return snapshot{
+		Name:         a.cfg.Name,
+		Tier:         a.tier.String(),
+		APIKeyTail:   tail(a.cfg.APIKey, 4),
+		Rolling:      snapshotWindow(a.roll, now),
+		Weekly:       snapshotWindow(a.week, now),
+		Monthly:      snapshotWindow(a.mon, now),
+		LastCost:     a.lastCost,
+		LastError:    a.lastError,
+		UsageFresh:   a.usageFresh,
+		LastUsageAt:  tptr(a.lastUsageAt),
+		Avoided:      now.Before(a.avoidedUntil),
 		AvoidedUntil: tptr(a.avoidedUntil),
 	}
-	return s
 }
 
-// monthStatusLocked reads a.mon.Status under the already-held lock.
-func (a *account) monthStatusLocked() string {
-	return a.mon.Status
+func snapshotWindow(window UsageWindow, now time.Time) windowJSON {
+	resetIn := ""
+	if window.Present && !window.ResetsAt.IsZero() {
+		resetIn = durStr(int64(window.ResetsAt.Sub(now).Seconds()))
+	}
+	return windowJSON{
+		Pct:     window.UsagePercent,
+		ResetIn: resetIn,
+		Status:  window.Status,
+		Present: window.Present,
+	}
 }
 
 func tptr(t time.Time) *time.Time {

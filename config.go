@@ -9,37 +9,31 @@ import (
 
 // Config is the on-disk JSON config at ~/.config/opencode-go-proxy/config.json.
 type Config struct {
-	ListenAddr         string        `json:"listen_addr"`
+	ListenAddr string `json:"listen_addr"`
 	// DisablePayg, when true, refuses to route to any account whose Go
 	// usage is exhausted — the proxy returns 503 instead of spending Zen
 	// balance. Default false (PAYG is enabled).
-	DisablePayg        bool          `json:"disable_payg"`
-	Upstream           string        `json:"upstream"`
+	DisablePayg bool   `json:"disable_payg"`
+	Upstream    string `json:"upstream"`
 	// FreeUpstream is the Zen free-tier endpoint. When set, requests for
 	// models in FreeModelMap are first tried against this endpoint before
 	// falling back to the Go upstream.
-	FreeUpstream       string            `json:"free_upstream"`
+	FreeUpstream string `json:"free_upstream"`
 	// FreeModelMap maps Go model IDs to their Zen free-tier equivalents.
 	// e.g. {"deepseek-v4-flash": "deepseek-v4-flash-free"}
-	FreeModelMap       map[string]string `json:"free_model_map"`
-	PollInterval       duration      `json:"poll_interval"`
-	ScrapeCacheTTL     duration      `json:"scrape_cache_ttl"`
-	HysteresisPoints   float64       `json:"hysteresis_points"`
-	TierSafePct        float64       `json:"tier_safe_pct"`
-	AlertEmail         string        `json:"alert_email"`
-	SMTPConfigPath     string        `json:"smtp_config_path"`
-	StaleRealertHours  int           `json:"stale_realert_hours"`
-	Avoid401Cooldown   duration      `json:"avoid_401_cooldown"`
-	RequestTimeout     duration      `json:"request_timeout"`
-	Accounts           []AccountCfg  `json:"accounts"`
+	FreeModelMap     map[string]string `json:"free_model_map"`
+	PollInterval     duration          `json:"poll_interval"`
+	HysteresisPoints float64           `json:"hysteresis_points"`
+	TierSafePct      float64           `json:"tier_safe_pct"`
+	Avoid401Cooldown duration          `json:"avoid_401_cooldown"`
+	RequestTimeout   duration          `json:"request_timeout"`
+	Accounts         []AccountCfg      `json:"accounts"`
 }
 
 // AccountCfg is the static credential block per OpenCode Go account.
 type AccountCfg struct {
-	Name        string `json:"name"`
-	APIKey      string `json:"api_key"`
-	WorkspaceID string `json:"workspace_id"`
-	AuthCookie  string `json:"auth_cookie"`
+	Name   string `json:"name"`
+	APIKey string `json:"api_key"`
 }
 
 // duration is a JSON string parsed via time.ParseDuration.
@@ -62,18 +56,14 @@ func (d duration) Std() time.Duration { return time.Duration(d) }
 
 func defaultConfig() Config {
 	return Config{
-		ListenAddr:        "127.0.0.1:8082",
-		Upstream:          "https://opencode.ai/zen/go",
-		FreeUpstream:      "https://opencode.ai/zen",
-		PollInterval:      duration(60 * time.Second),
-		ScrapeCacheTTL:    duration(90 * time.Second),
-		HysteresisPoints:  8,
-		TierSafePct:       95,
-		AlertEmail:        "",
-		SMTPConfigPath:    "",
-		StaleRealertHours: 24,
-		Avoid401Cooldown:  duration(2 * time.Minute),
-		RequestTimeout:    duration(10 * time.Minute),
+		ListenAddr:       "127.0.0.1:8082",
+		Upstream:         "https://opencode.ai/zen/go",
+		FreeUpstream:     "https://opencode.ai/zen",
+		PollInterval:     duration(60 * time.Second),
+		HysteresisPoints: 8,
+		TierSafePct:      95,
+		Avoid401Cooldown: duration(2 * time.Minute),
+		RequestTimeout:   duration(10 * time.Minute),
 	}
 }
 
@@ -105,17 +95,11 @@ func loadConfig(path string) (Config, error) {
 	if cfg.PollInterval == 0 {
 		cfg.PollInterval = duration(60 * time.Second)
 	}
-	if cfg.ScrapeCacheTTL == 0 {
-		cfg.ScrapeCacheTTL = duration(90 * time.Second)
-	}
 	if cfg.HysteresisPoints == 0 {
 		cfg.HysteresisPoints = 8
 	}
 	if cfg.TierSafePct == 0 {
 		cfg.TierSafePct = 95
-	}
-	if cfg.StaleRealertHours == 0 {
-		cfg.StaleRealertHours = 24
 	}
 	if cfg.Avoid401Cooldown == 0 {
 		cfg.Avoid401Cooldown = duration(2 * time.Minute)
@@ -127,8 +111,8 @@ func loadConfig(path string) (Config, error) {
 		return cfg, fmt.Errorf("config %s: no accounts configured", path)
 	}
 	for i, a := range cfg.Accounts {
-		if a.Name == "" || a.APIKey == "" || a.WorkspaceID == "" || a.AuthCookie == "" {
-			return cfg, fmt.Errorf("config %s: account[%d] missing one of name/api_key/workspace_id/auth_cookie", path, i)
+		if a.Name == "" || a.APIKey == "" {
+			return cfg, fmt.Errorf("config %s: account[%d] missing name or api_key", path, i)
 		}
 	}
 	return cfg, nil

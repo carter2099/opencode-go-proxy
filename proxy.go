@@ -14,11 +14,11 @@ import (
 
 // proxyCore wires the picker, upstream, and clients.
 type proxyCore struct {
-	cfg     Config
-	picker  *picker
-	upstream string
-	client  *http.Client
-	scrapeClient *http.Client
+	cfg         Config
+	picker      *picker
+	upstream    string
+	client      *http.Client
+	usageClient *http.Client
 
 	// Free-tier routing: when FreeModelMap is non-empty, matching models
 	// are first attempted against FreeUpstream before falling back to Go.
@@ -31,15 +31,15 @@ type proxyCore struct {
 
 func newProxyCore(cfg Config) *proxyCore {
 	return &proxyCore{
-		cfg:          cfg,
-		picker:       newPicker(cfg),
-		upstream:     cfg.Upstream,
-		client:       &http.Client{Timeout: cfg.RequestTimeout.Std(), Transport: &http.Transport{}},
-		scrapeClient: &http.Client{Timeout: scrapeTimeout, Transport: &http.Transport{}},
-		freeUpstream: cfg.FreeUpstream,
-		freeModelMap: cfg.FreeModelMap,
+		cfg:           cfg,
+		picker:        newPicker(cfg),
+		upstream:      cfg.Upstream,
+		client:        &http.Client{Timeout: cfg.RequestTimeout.Std(), Transport: &http.Transport{}},
+		usageClient:   &http.Client{Timeout: usageTimeout, Transport: &http.Transport{}},
+		freeUpstream:  cfg.FreeUpstream,
+		freeModelMap:  cfg.FreeModelMap,
 		freeStickyIdx: -1,
-		freeClient:   &http.Client{Timeout: cfg.RequestTimeout.Std(), Transport: &http.Transport{}},
+		freeClient:    &http.Client{Timeout: cfg.RequestTimeout.Std(), Transport: &http.Transport{}},
 	}
 }
 

@@ -20,7 +20,7 @@ func main() {
 	}
 	pc := newProxyCore(cfg)
 
-	go scrapeLoop(pc)
+	go usageLoop(pc)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", pc.handleHealth)
 	mux.HandleFunc("/usage", pc.handleUsage)
@@ -39,90 +39,67 @@ func main() {
 	}
 }
 
-// scrapeLoop is the proactive layer: polls /go + /billing per account on
-// pollInterval, gated by scrapeCacheTTL so a tight loop won't hammer upstream.
-func scrapeLoop(pc *proxyCore) {
+// usageLoop polls OpenCode's authenticated usage API for every account.
+func usageLoop(pc *proxyCore) {
 	poll := pc.cfg.PollInterval.Std()
 	if poll <= 0 {
 		poll = 60 * time.Second
 	}
-	realert := time.Duration(pc.cfg.StaleRealertHours) * time.Hour
 
-	// Kick off an initial scrape promptly.
-	pc.scrapeAll(time.Now(), realert)
+	pc.pollUsage(time.Now())
 	ticker := time.NewTicker(poll)
 	defer ticker.Stop()
 	for now := range ticker.C {
-		pc.scrapeAll(now, realert)
+		pc.pollUsage(now)
 	}
 }
 
-func (pc *proxyCore) scrapeAll(now time.Time, realert time.Duration) {
-	ttl := pc.cfg.ScrapeCacheTTL.Std()
+func (pc *proxyCore) pollUsage(now time.Time) {
 	for _, acct := range pc.picker.accounts {
-		if !acct.lastScrapeAt.IsZero() && now.Sub(acct.lastScrapeAt) < ttl {
-			continue // cache gate
+		data, err := fetchUsage(pc.usageClient, pc.upstream, acct.cfg.APIKey)
+		if err != nil {
+			acct.markUsageError(err)
+			log.Printf("[%s] usage poll failed: %v", acct.cfg.Name, err)
+			continue
 		}
-		d := fetchDashboard(pc.scrapeClient, acct.cfg.WorkspaceID, acct.cfg.AuthCookie)
-		var p PaygData
-		if d.HasAny {
-			p, _ = fetchBillingData(pc.scrapeClient, acct.cfg.WorkspaceID, acct.cfg.AuthCookie)
-		}
-		acct.applyScrape(d, p, now)
-		if alertingEnabled(pc.cfg) && acct.staleAlertInfo(now, realert) {
-			go func(a *account) {
-				lastGood := a.lastScrapeAt
-				if err := sendAlertEmail(pc.cfg, a, lastGood); err != nil {
-					log.Printf("[%s] stale-cookie alert email failed: %v", a.cfg.Name, err)
-				} else {
-					log.Printf("[%s] cookie stale — alert email sent to %s", a.cfg.Name, pc.cfg.AlertEmail)
-				}
-			}(acct)
-		}
+		acct.applyUsage(data, now, pc.cfg.TierSafePct)
 	}
 }
 
-// handleHealth renders the /health JSON per the spec.
-// aggregateUsage summarises billing across all accounts.
+// aggregateUsage summarises quota pressure across all accounts.
 type aggregateUsage struct {
-	TotalAccounts   int     `json:"total_accounts"`
-	ActiveAccounts  int     `json:"active_accounts"`
-	MaxRollingPct   float64 `json:"max_rolling_pct"`
-	MaxWeeklyPct    float64 `json:"max_weekly_pct"`
-	MaxMonthlyPct   float64 `json:"max_monthly_pct"`
-	TotalPaygBalance float64 `json:"total_payg_balance_usd"`
-	TotalPaygUsage  float64 `json:"total_payg_usage_usd"`
-	AnyAvoided      bool    `json:"any_avoided"`
-	AnyStale        bool    `json:"any_stale_cookie"`
+	TotalAccounts  int     `json:"total_accounts"`
+	ActiveAccounts int     `json:"active_accounts"`
+	MaxRollingPct  float64 `json:"max_rolling_pct"`
+	MaxWeeklyPct   float64 `json:"max_weekly_pct"`
+	MaxMonthlyPct  float64 `json:"max_monthly_pct"`
+	AnyAvoided     bool    `json:"any_avoided"`
+	AnyUsageStale  bool    `json:"any_usage_stale"`
 }
 
 func computeAggregate(snaps []snapshot) aggregateUsage {
-	var a aggregateUsage
-	a.TotalAccounts = len(snaps)
-	for _, s := range snaps {
-		if !s.Avoided {
-			a.ActiveAccounts++
+	var aggregate aggregateUsage
+	aggregate.TotalAccounts = len(snaps)
+	for _, snap := range snaps {
+		if !snap.Avoided {
+			aggregate.ActiveAccounts++
 		} else {
-			a.AnyAvoided = true
+			aggregate.AnyAvoided = true
 		}
-		if !s.CookieFresh {
-			a.AnyStale = true
+		if !snap.UsageFresh {
+			aggregate.AnyUsageStale = true
 		}
-		if s.Rolling.Present && s.Rolling.Pct > a.MaxRollingPct {
-			a.MaxRollingPct = s.Rolling.Pct
+		if snap.Rolling.Present && snap.Rolling.Pct > aggregate.MaxRollingPct {
+			aggregate.MaxRollingPct = snap.Rolling.Pct
 		}
-		if s.Weekly.Present && s.Weekly.Pct > a.MaxWeeklyPct {
-			a.MaxWeeklyPct = s.Weekly.Pct
+		if snap.Weekly.Present && snap.Weekly.Pct > aggregate.MaxWeeklyPct {
+			aggregate.MaxWeeklyPct = snap.Weekly.Pct
 		}
-		if s.Monthly.Present && s.Monthly.Pct > a.MaxMonthlyPct {
-			a.MaxMonthlyPct = s.Monthly.Pct
-		}
-		if s.Payg.Present {
-			a.TotalPaygBalance += s.Payg.BalanceUsd
-			a.TotalPaygUsage += s.Payg.MonthlyUsageUsd
+		if snap.Monthly.Present && snap.Monthly.Pct > aggregate.MaxMonthlyPct {
+			aggregate.MaxMonthlyPct = snap.Monthly.Pct
 		}
 	}
-	return a
+	return aggregate
 }
 
 // handleHealth renders the /health JSON per the spec.
@@ -172,8 +149,8 @@ func (pc *proxyCore) handleUsage(w http.ResponseWriter, r *http.Request) {
 			avoided = " [AVOIDED]"
 		}
 		stale := ""
-		if !s.CookieFresh {
-			stale = " [STALE]"
+		if !s.UsageFresh {
+			stale = " [USAGE STALE]"
 		}
 		fmt.Fprintf(w, "Account %d: %s (%s)%s%s\n", i+1, s.Name, s.Tier, avoided, stale)
 		if s.Rolling.Present {
@@ -185,9 +162,6 @@ func (pc *proxyCore) handleUsage(w http.ResponseWriter, r *http.Request) {
 		if s.Monthly.Present {
 			fmt.Fprintf(w, "  30d:  %5.1f%%  reset in %s  [%s]\n", s.Monthly.Pct, s.Monthly.ResetIn, s.Monthly.Status)
 		}
-		if s.Payg.Present && s.Payg.BalanceUsd > 0 {
-			fmt.Fprintf(w, "  PAYG: $%.2f balance, $%.2f/mo used of $%.2f\n", s.Payg.BalanceUsd, s.Payg.MonthlyUsageUsd, s.Payg.MonthlyLimitUsd)
-		}
 		fmt.Fprintf(w, "\n")
 	}
 
@@ -197,36 +171,40 @@ func (pc *proxyCore) handleUsage(w http.ResponseWriter, r *http.Request) {
 	if agg.AnyAvoided {
 		w.Write([]byte(" (some avoided)"))
 	}
-	if agg.AnyStale {
-		w.Write([]byte(" [STALE COOKIE]"))
+	if agg.AnyUsageStale {
+		w.Write([]byte(" [USAGE STALE]"))
 	}
 	w.Write([]byte("\n"))
 	fmt.Fprintf(w, "Peak usage:  5h %.1f%% | 7d %.1f%% | 30d %.1f%%\n", agg.MaxRollingPct, agg.MaxWeeklyPct, agg.MaxMonthlyPct)
-	if agg.TotalPaygBalance > 0 {
-		fmt.Fprintf(w, "PAYG:        $%.2f balance, $%.2f/mo usage\n", agg.TotalPaygBalance, agg.TotalPaygUsage)
-	}
 	fmt.Fprintf(w, "Status:      %s\n", statusString(snaps))
 	fmt.Fprintf(w, "Upstream:    %s\n", pc.upstream)
 }
 
 func statusString(snaps []snapshot) string {
+	if len(snaps) == 0 {
+		return "initializing"
+	}
 	allAvoided := true
+	allFresh := true
 	anyFresh := false
-	for _, s := range snaps {
-		if !s.Avoided {
+	for _, snap := range snaps {
+		if !snap.Avoided {
 			allAvoided = false
 		}
-		if s.CookieFresh {
+		if snap.UsageFresh {
 			anyFresh = true
+		} else {
+			allFresh = false
 		}
 	}
 	switch {
-	case allAvoided && len(snaps) > 0:
+	case allAvoided:
 		return "degraded"
-	case anyFresh:
+	case allFresh:
 		return "ok"
+	case anyFresh:
+		return "degraded"
 	default:
 		return "initializing"
 	}
 }
-func alertingEnabled(c Config) bool { return c.AlertEmail != "" && c.SMTPConfigPath != "" }
