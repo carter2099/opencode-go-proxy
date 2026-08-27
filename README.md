@@ -1,14 +1,14 @@
 # opencode-go-proxy
 
-A local reverse proxy that owns **one or more** OpenCode Go subscriptions and intelligently
-routes each request to the account with the most headroom. It reads quota windows from
-OpenCode's authenticated usage API, preserves free Go usage as long as possible, and
-round-robins across accounts when every subscription is exhausted.
+A local reverse proxy that owns **one or more** OpenCode Go subscriptions. Models
+configured in `free_model_map` first try a mapped ID on OpenCode's Zen free endpoint;
+any non-200 falls through to the normal Go upstream. That Go path reads authenticated
+quota windows, chooses the account with the most headroom, preserves free Go usage as
+long as possible, and round-robins when every subscription is exhausted.
 
-Clients point at `http://localhost:8082/v1` and use any non-empty
-placeholder API key — the proxy injects the real key for the chosen account. The proxy is
-**path-transparent**: it forwards `/v1/chat/completions` (OpenAI-compat) and `/v1/messages`
-(anthropic) to `https://opencode.ai/zen/go` unchanged except for the auth header.
+Clients point at `http://localhost:8082/v1` and use any non-empty placeholder API key.
+The proxy injects the chosen account's real key. Request paths are preserved on both
+routes; only a configured free-tier attempt rewrites the JSON `model` field.
 
 ## Quick start
 
@@ -35,18 +35,20 @@ demotes that account before the next request is routed.
 ## Routing
 
 Per request:
-1. Exclude `avoided` keys (401 cooldown). Both excluded → `503`.
-2. Prefer `go_free` accounts over `payg`.
-3. Among same-tier, pick lower load. **Hysteresis (default 8 pts)** — don't switch the
-   sticky active key unless the other is ≥8 pts lower. This is the stickiness.
-4. **Reactive override**: a 200 response with `cost>0` on a `go_free` account demotes it
-   to `payg` immediately; next request recomputes.
-5. All PAYG → round-robin. The usage API does not expose Zen balances.
+1. If the request model appears in `free_model_map`, rewrite it to the mapped ID and try
+   `free_upstream` with a sticky non-avoided account. A 429 rotates the free sticky
+   account; every non-200 or transport failure falls through to the Go path.
+2. On the Go path, exclude `avoided` keys (401 cooldown). All excluded → `503`.
+3. Prefer `go_free` accounts over `payg`.
+4. Among the same tier, pick lower load. **Hysteresis (default 8 pts)** avoids switching
+   the sticky account unless another is at least 8 points lower.
+5. A 200 response with `cost>0` on a `go_free` account demotes it to `payg`
+   immediately; the next request recomputes.
+6. All PAYG → round-robin. The usage API does not expose Zen balances.
 
-Non-200 handling is conservative pass-through: **no tier/state mutation** from stray 5xx /
-429 / 402, protecting against transient corruption. The single exception is a self-healing
-**401 cooldown** — a 401 marks that key avoided for 2 min, auto-recovered on the next 200 or
-on cooldown expiry. This covers the revoked-key gap without lasting state corruption.
+Go-upstream non-200 handling is conservative pass-through with no tier/state mutation,
+except a self-healing **401 cooldown**: a 401 avoids that key for two minutes, and the
+next 200 or cooldown expiry restores it.
 
 ## Auth
 
@@ -63,6 +65,11 @@ using the chosen account's real API key.
 {
   "listen_addr": "127.0.0.1:8082",
   "upstream": "https://opencode.ai/zen/go",
+  "free_upstream": "https://opencode.ai/zen",
+  "free_model_map": {
+    "deepseek-v4-flash": "deepseek-v4-flash-free",
+    "mimo-v2.5": "mimo-v2.5-free"
+  },
   "disable_payg": false,
   "poll_interval": "60s",
   "hysteresis_points": 8,
@@ -153,8 +160,9 @@ with the included SHA-256 checksums, and place on `$PATH`.
 ## Pointing a client at the proxy
 
 1. **Base URL** → `http://localhost:8082/v1` (apps that want the full base) or
-   `http://localhost:8082` (apps that append `/v1` themselves). Either works; the proxy is
-   path-transparent so long as the final URL is `…/v1/chat/completions` or `…/v1/messages`.
+   `http://localhost:8082` (apps that append `/v1` themselves). Either works when the
+   final path is `/v1/chat/completions` or `/v1/messages`; mapped free-tier requests also
+   rewrite the body model ID before preserving that path.
 2. **API key** → any non-empty placeholder (e.g. `proxy`). The proxy overwrites it with the
    chosen account's real key. The app just needs *something* so its HTTP client sends an
    auth header.

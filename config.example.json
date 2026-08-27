@@ -1,6 +1,11 @@
 {
   "listen_addr": "0.0.0.0:8082",
   "upstream": "https://opencode.ai/zen/go",
+  "free_upstream": "https://opencode.ai/zen",
+  "free_model_map": {
+    "deepseek-v4-flash": "deepseek-v4-flash-free",
+    "mimo-v2.5": "mimo-v2.5-free"
+  },
   "disable_payg": false,
   "poll_interval": "60s",
   "hysteresis_points": 8,
