@@ -52,10 +52,10 @@ next 200 or cooldown expiry restores it.
 
 ## Auth
 
-The proxy swaps the auth header to match the upstream endpoint: OpenAI-compat
-(`/v1/chat/completions`) accepts `Authorization: Bearer` or `x-api-key`; anthropic
-(`/v1/messages`) requires `x-api-key`. The proxy sends whichever form the endpoint expects,
-using the chosen account's real API key.
+The proxy removes client cookies and substitutes the selected account key while preserving
+the client's auth-header shape: an incoming `x-api-key` remains `x-api-key`; an incoming
+`Authorization` header becomes `Bearer <real-key>`; a request with neither defaults to
+Bearer auth. Clients must choose the header form their target API expects.
 
 ## Config
 

@@ -30,7 +30,7 @@ Single `package main`, no subpackages.
 
 ## Invariants (do not violate)
 
-- Non-200 responses are pass-through with **no tier/state mutation** — the only exception is the 401 cooldown (`mark401`/`clear401On200`), which self-heals on the next 200.
+- On the Go-upstream path, non-200 responses are pass-through with **no tier/state mutation** — the only exception is the 401 cooldown (`mark401`/`clear401On200`). The separate free-tier path falls through on non-200 and rotates its sticky account on 429.
 - The top-level `cost` field in a 200 body is ground truth: `cost>0` on a `go_free` account demotes it to `payg` immediately (`applyCost`).
 - `tier` is runtime state, not an account property; `name` is the only stable account identifier.
 - The authenticated usage API steers; `cost` verifies. A stale poll must never cost free tokens — the reactive override catches it.
