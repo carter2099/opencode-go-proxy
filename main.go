@@ -33,7 +33,7 @@ func main() {
 		WriteTimeout: cfg.RequestTimeout.Std(),
 		IdleTimeout:  120 * time.Second,
 	}
-	log.Printf("opencode-go-proxy starting on %s → %s (%d accounts)", cfg.ListenAddr, cfg.Upstream, len(cfg.Accounts))
+	log.Printf("opencode-go-proxy starting on %s → %s (%d accounts, free endpoint=%t)", cfg.ListenAddr, cfg.Upstream, len(cfg.Accounts), cfg.FreeEndpointEnabled)
 	if err := srv.ListenAndServe(); err != nil {
 		log.Fatalf("server: %v", err)
 	}
@@ -115,12 +115,13 @@ func (pc *proxyCore) handleHealth(w http.ResponseWriter, r *http.Request) {
 		snaps = append(snaps, a.snapshot(now))
 	}
 	resp := map[string]interface{}{
-		"status":       statusString(snaps),
-		"active_key":   active,
-		"accounts":     snaps,
-		"aggregate":    computeAggregate(snaps),
-		"upstream":     pc.upstream,
-		"disable_payg": pc.cfg.DisablePayg,
+		"status":                statusString(snaps),
+		"active_key":            active,
+		"accounts":              snaps,
+		"aggregate":             computeAggregate(snaps),
+		"upstream":              pc.upstream,
+		"disable_payg":          pc.cfg.DisablePayg,
+		"free_endpoint_enabled": pc.cfg.FreeEndpointEnabled,
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
@@ -178,6 +179,7 @@ func (pc *proxyCore) handleUsage(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "Peak usage:  5h %.1f%% | 7d %.1f%% | 30d %.1f%%\n", agg.MaxRollingPct, agg.MaxWeeklyPct, agg.MaxMonthlyPct)
 	fmt.Fprintf(w, "Status:      %s\n", statusString(snaps))
 	fmt.Fprintf(w, "Upstream:    %s\n", pc.upstream)
+	fmt.Fprintf(w, "Free endpoint: %t\n", pc.cfg.FreeEndpointEnabled)
 }
 
 func statusString(snaps []snapshot) string {

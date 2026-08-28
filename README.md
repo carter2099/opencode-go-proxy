@@ -1,8 +1,9 @@
 # opencode-go-proxy
 
-A local reverse proxy that owns **one or more** OpenCode Go subscriptions. Models
-configured in `free_model_map` first try a mapped ID on OpenCode's Zen free endpoint;
-any non-200 falls through to the normal Go upstream. That Go path reads authenticated
+A local reverse proxy that owns **one or more** OpenCode Go subscriptions. When
+`free_endpoint_enabled` is true, models configured in `free_model_map` first try a
+mapped ID on OpenCode's Zen free endpoint; any non-200 falls through to the normal
+Go upstream. That Go path reads authenticated
 quota windows, chooses the account with the most headroom, preserves free Go usage as
 long as possible, and round-robins when every subscription is exhausted.
 
@@ -35,9 +36,10 @@ demotes that account before the next request is routed.
 ## Routing
 
 Per request:
-1. If the request model appears in `free_model_map`, rewrite it to the mapped ID and try
-   `free_upstream` with a sticky non-avoided account. A 429 rotates the free sticky
-   account; every non-200 or transport failure falls through to the Go path.
+1. When `free_endpoint_enabled` is `true` and the request model appears in
+   `free_model_map`, rewrite it to the mapped ID and try `free_upstream` with a sticky
+   non-avoided account. A 429 rotates the free sticky account; every non-200 or
+   transport failure falls through to the Go path. When disabled, skip this attempt.
 2. On the Go path, exclude `avoided` keys (401 cooldown). All excluded → `503`.
 3. Prefer `go_free` accounts over `payg`.
 4. Among the same tier, pick lower load. **Hysteresis (default 8 pts)** avoids switching
@@ -65,6 +67,7 @@ Bearer auth. Clients must choose the header form their target API expects.
 {
   "listen_addr": "127.0.0.1:8082",
   "upstream": "https://opencode.ai/zen/go",
+  "free_endpoint_enabled": false,
   "free_upstream": "https://opencode.ai/zen",
   "free_model_map": {
     "deepseek-v4-flash": "deepseek-v4-flash-free",
@@ -82,6 +85,11 @@ Bearer auth. Clients must choose the header form their target API expects.
   ]
 }
 ```
+
+`free_endpoint_enabled` (default `false`) — when `true`, matching models first try
+the direct Zen free endpoint. When `false`, every request goes directly through the
+Go subscription upstream; `free_upstream` and `free_model_map` remain configured so
+the path can be re-enabled with one boolean change.
 
 `disable_payg` (default `false`) — when `true`, the proxy refuses to route to any
 account whose Go usage is exhausted. Returns `503` instead of spending Zen balance.

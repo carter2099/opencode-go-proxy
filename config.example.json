@@ -1,6 +1,7 @@
 {
   "listen_addr": "0.0.0.0:8082",
   "upstream": "https://opencode.ai/zen/go",
+  "free_endpoint_enabled": false,
   "free_upstream": "https://opencode.ai/zen",
   "free_model_map": {
     "deepseek-v4-flash": "deepseek-v4-flash-free",

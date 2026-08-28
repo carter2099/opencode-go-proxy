@@ -15,11 +15,14 @@ type Config struct {
 	// balance. Default false (PAYG is enabled).
 	DisablePayg bool   `json:"disable_payg"`
 	Upstream    string `json:"upstream"`
-	// FreeUpstream is the Zen free-tier endpoint. When set, requests for
+	// FreeEndpointEnabled controls the optional direct Zen free-model attempt.
+	// It is false by default; the Go subscription upstream remains active.
+	FreeEndpointEnabled bool `json:"free_endpoint_enabled"`
+	// FreeUpstream is the Zen free-model endpoint. When enabled, requests for
 	// models in FreeModelMap are first tried against this endpoint before
 	// falling back to the Go upstream.
 	FreeUpstream string `json:"free_upstream"`
-	// FreeModelMap maps Go model IDs to their Zen free-tier equivalents.
+	// FreeModelMap maps Go model IDs to their Zen free-model equivalents.
 	// e.g. {"deepseek-v4-flash": "deepseek-v4-flash-free"}
 	FreeModelMap     map[string]string `json:"free_model_map"`
 	PollInterval     duration          `json:"poll_interval"`
@@ -91,6 +94,9 @@ func loadConfig(path string) (Config, error) {
 	}
 	if cfg.FreeUpstream == "" {
 		cfg.FreeUpstream = "https://opencode.ai/zen"
+	}
+	if cfg.FreeEndpointEnabled && len(cfg.FreeModelMap) == 0 {
+		return cfg, fmt.Errorf("config %s: free_endpoint_enabled requires free_model_map", path)
 	}
 	if cfg.PollInterval == 0 {
 		cfg.PollInterval = duration(60 * time.Second)

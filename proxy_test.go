@@ -2,8 +2,10 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 	"time"
 )
@@ -476,5 +478,145 @@ func TestPicker_DisablePayg(t *testing.T) {
 	}
 	if chosen.cfg.Name != "a" {
 		t.Errorf("go_free should be chosen, got %s", chosen.cfg.Name)
+	}
+}
+
+func TestLoadConfig_FreeEndpointSwitch(t *testing.T) {
+	writeConfig := func(t *testing.T, body string) string {
+		t.Helper()
+		path := t.TempDir() + "/config.json"
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+
+	t.Run("disabled by default", func(t *testing.T) {
+		cfg, err := loadConfig(writeConfig(t, `{
+			"accounts": [{"name": "a", "api_key": "sk-a"}]
+		}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.FreeEndpointEnabled {
+			t.Fatal("free endpoint should default to disabled")
+		}
+	})
+
+	t.Run("explicitly enabled", func(t *testing.T) {
+		cfg, err := loadConfig(writeConfig(t, `{
+			"free_endpoint_enabled": true,
+			"free_model_map": {"deepseek-v4-flash": "deepseek-v4-flash-free"},
+			"accounts": [{"name": "a", "api_key": "sk-a"}]
+		}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !cfg.FreeEndpointEnabled {
+			t.Fatal("free endpoint switch was not loaded")
+		}
+	})
+
+	t.Run("enabled requires model map", func(t *testing.T) {
+		_, err := loadConfig(writeConfig(t, `{
+			"free_endpoint_enabled": true,
+			"accounts": [{"name": "a", "api_key": "sk-a"}]
+		}`))
+		if err == nil {
+			t.Fatal("enabled free endpoint without a model map should fail")
+		}
+	})
+}
+
+func TestHandleProxy_FreeEndpointSwitch(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		name := "disabled"
+		if enabled {
+			name = "enabled"
+		}
+		t.Run(name, func(t *testing.T) {
+			freeCalls := 0
+			goCalls := 0
+			freeModel := ""
+			goModel := ""
+
+			freeUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				freeCalls++
+				var body struct {
+					Model string `json:"model"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Error(err)
+				}
+				freeModel = body.Model
+				w.Header().Set("Content-Type", "application/json")
+				w.Write([]byte(`{"id":"free","choices":[]}`))
+			}))
+			defer freeUpstream.Close()
+
+			goUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				goCalls++
+				var body struct {
+					Model string `json:"model"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Error(err)
+				}
+				goModel = body.Model
+				w.Header().Set("Content-Type", "application/json")
+				w.Write([]byte(`{"id":"go","cost":"0","choices":[]}`))
+			}))
+			defer goUpstream.Close()
+
+			cfg := Config{
+				Upstream:            goUpstream.URL,
+				FreeEndpointEnabled: enabled,
+				FreeUpstream:        freeUpstream.URL,
+				FreeModelMap: map[string]string{
+					"deepseek-v4-flash": "deepseek-v4-flash-free",
+				},
+				RequestTimeout:   duration(10 * time.Second),
+				Avoid401Cooldown: duration(2 * time.Minute),
+				Accounts:         []AccountCfg{{Name: "a", APIKey: "sk-a"}},
+			}
+			pc := newProxyCore(cfg)
+
+			req := httptest.NewRequest(
+				http.MethodPost,
+				"/v1/chat/completions",
+				bytes.NewBufferString(`{"model":"deepseek-v4-flash","stream":false}`),
+			)
+			rec := httptest.NewRecorder()
+			pc.handleProxy(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", rec.Code)
+			}
+
+			if enabled {
+				if freeCalls != 1 || goCalls != 0 {
+					t.Fatalf("calls free=%d go=%d, want free=1 go=0", freeCalls, goCalls)
+				}
+				if freeModel != "deepseek-v4-flash-free" {
+					t.Fatalf("free model = %q", freeModel)
+				}
+			} else {
+				if freeCalls != 0 || goCalls != 1 {
+					t.Fatalf("calls free=%d go=%d, want free=0 go=1", freeCalls, goCalls)
+				}
+				if goModel != "deepseek-v4-flash" {
+					t.Fatalf("Go model = %q", goModel)
+				}
+			}
+
+			health := httptest.NewRecorder()
+			pc.handleHealth(health, httptest.NewRequest(http.MethodGet, "/health", nil))
+			var payload map[string]interface{}
+			if err := json.Unmarshal(health.Body.Bytes(), &payload); err != nil {
+				t.Fatal(err)
+			}
+			if payload["free_endpoint_enabled"] != enabled {
+				t.Fatalf("health free_endpoint_enabled = %#v", payload["free_endpoint_enabled"])
+			}
+		})
 	}
 }

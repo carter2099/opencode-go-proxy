@@ -20,8 +20,8 @@ type proxyCore struct {
 	client      *http.Client
 	usageClient *http.Client
 
-	// Free-tier routing: when FreeModelMap is non-empty, matching models
-	// are first attempted against FreeUpstream before falling back to Go.
+	// Optional free-endpoint routing. FreeEndpointEnabled gates the mapped
+	// attempt; all disabled requests go directly to the Go upstream.
 	freeUpstream  string
 	freeModelMap  map[string]string
 	freeStickyIdx int
@@ -43,9 +43,9 @@ func newProxyCore(cfg Config) *proxyCore {
 	}
 }
 
-// handleProxy is the "/" catch-all. For models with a free-tier equivalent
-// (configured in free_model_map), it first tries the Zen free endpoint; on
-// 429 or other failure it falls back to the Go upstream with the existing
+// handleProxy is the "/" catch-all. When FreeEndpointEnabled is true, models
+// configured in free_model_map first try the Zen free endpoint; on 429 or
+// other failure the request falls back to the Go upstream with the existing
 // picker's account selection and cost tracking.
 func (pc *proxyCore) handleProxy(w http.ResponseWriter, r *http.Request) {
 	// Buffer the request body once — needed for model inspection and
@@ -57,8 +57,8 @@ func (pc *proxyCore) handleProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Body.Close()
 
-	// ── Free-tier fast path ──────────────────────────────────────────
-	if pc.freeModelMap != nil && len(body) > 0 {
+	// ── Optional Zen free endpoint ───────────────────────────────────
+	if pc.cfg.FreeEndpointEnabled && pc.freeModelMap != nil && len(body) > 0 {
 		if resp := pc.tryFreeTier(r, body); resp != nil {
 			if resp.StatusCode == 200 {
 				copyHeaders(w.Header(), resp.Header)
